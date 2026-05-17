@@ -183,6 +183,31 @@ function normalizeConversation(conversation: ImageConversation & Record<string, 
   };
 }
 
+function shouldKeepTurn(turn: ImageTurn): boolean {
+  if (turn.prompt.trim() || turn.promptDeleted) {
+    return true;
+  }
+  if (turn.referenceImages.length > 0) {
+    return true;
+  }
+  return turn.images.some((image) => image.status === "loading" || image.status === "error" || Boolean(image.taskId));
+}
+
+function pruneOrphanResultTurns(conversation: ImageConversation): ImageConversation | null {
+  const turns = conversation.turns.filter(shouldKeepTurn);
+  if (turns.length === 0) {
+    return null;
+  }
+  if (turns.length === conversation.turns.length) {
+    return conversation;
+  }
+  return {
+    ...conversation,
+    turns,
+    updatedAt: turns.at(-1)?.createdAt || conversation.updatedAt,
+  };
+}
+
 function sortImageConversations(conversations: ImageConversation[]): ImageConversation[] {
   return [...conversations].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
@@ -210,7 +235,18 @@ async function readStoredImageConversations(): Promise<ImageConversation[]> {
     (await imageConversationStorage.getItem<Array<ImageConversation & Record<string, unknown>>>(
       IMAGE_CONVERSATIONS_KEY,
     )) || [];
-  return items.map(normalizeConversation);
+  const normalizedItems = items.map(normalizeConversation);
+  const prunedItems = normalizedItems.flatMap((conversation) => {
+    const pruned = pruneOrphanResultTurns(conversation);
+    return pruned ? [pruned] : [];
+  });
+  if (
+    prunedItems.length !== normalizedItems.length ||
+    prunedItems.some((conversation, index) => conversation.turns.length !== normalizedItems[index]?.turns.length)
+  ) {
+    await imageConversationStorage.setItem(IMAGE_CONVERSATIONS_KEY, sortImageConversations(prunedItems));
+  }
+  return prunedItems;
 }
 
 export async function listImageConversations(): Promise<ImageConversation[]> {
