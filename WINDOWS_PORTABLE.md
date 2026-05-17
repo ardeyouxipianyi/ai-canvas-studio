@@ -25,9 +25,9 @@ chatgpt2api-windows-portable/
 │  ├─ main.py
 │  ├─ config.example.json
 │  ├─ config.json
+│  ├─ data/
 │  ├─ web_dist/
 │  └─ python_packages/
-├─ data/
 └─ runtime/
    ├─ python/
    │  └─ python.exe
@@ -79,6 +79,6 @@ stop.bat
 ## 注意
 
 - 发布前请检查 `app/config.example.json`，不要放真实账号、真实 token、真实密钥。
-- 用户自己的数据会放在 `data/`。
+- 用户自己的数据会放在 `app/data/`。
 - 默认端口是 `3000`。
 - 如果端口被占用，先运行 `stop.bat`，或者关闭占用 `3000` 端口的程序。

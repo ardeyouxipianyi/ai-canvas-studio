@@ -151,7 +151,7 @@ if (-not $SkipPythonPackages) {
     }
 }
 
-$dataDir = Join-Path $outputPath "data"
+$dataDir = Join-Path $appPath "data"
 New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
 
 Write-Host "[portable] Done."
