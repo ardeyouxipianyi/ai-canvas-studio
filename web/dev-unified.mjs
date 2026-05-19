@@ -11,6 +11,13 @@ const backendOrigin = new URL(process.env.CHATGPT2API_BACKEND_URL || "http://127
 const webDir = dirname(fileURLToPath(import.meta.url));
 const apiPrefixes = ["/v1/", "/api/", "/auth/", "/images/", "/image-thumbnails/"];
 const apiExact = new Set(["/version"]);
+const handledSocketErrors = new WeakSet();
+
+function absorbSocketError(socket) {
+  if (!socket || handledSocketErrors.has(socket)) return;
+  handledSocketErrors.add(socket);
+  socket.on("error", () => {});
+}
 
 function isBackendPath(url = "") {
   const pathname = new URL(url, `http://127.0.0.1:${publicPort}`).pathname;
@@ -22,6 +29,18 @@ function proxyHttp(req, res, target) {
   headers.host = req.headers.host || `127.0.0.1:${publicPort}`;
   headers["x-forwarded-host"] = req.headers.host || `127.0.0.1:${publicPort}`;
   headers["x-forwarded-proto"] = "http";
+  absorbSocketError(req.socket);
+  absorbSocketError(res.socket);
+
+  const closeWithProxyError = (error) => {
+    if (res.destroyed) return;
+    if (!res.headersSent) {
+      res.writeHead(502, { "content-type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify({ error: { message: error?.message || "proxy error" } }));
+      return;
+    }
+    res.destroy(error);
+  };
 
   const proxyReq = http.request(
     {
@@ -34,20 +53,20 @@ function proxyHttp(req, res, target) {
     },
     (proxyRes) => {
       res.writeHead(proxyRes.statusCode || 502, proxyRes.headers);
+      proxyRes.on("error", closeWithProxyError);
       proxyRes.pipe(res);
     },
   );
   proxyReq.setTimeout(0);
-  proxyReq.on("error", (error) => {
-    if (!res.headersSent) {
-      res.writeHead(502, { "content-type": "application/json; charset=utf-8" });
-    }
-    res.end(JSON.stringify({ error: { message: error.message || "proxy error" } }));
-  });
+  proxyReq.on("error", closeWithProxyError);
+  req.on("aborted", () => proxyReq.destroy());
+  req.on("error", () => proxyReq.destroy());
+  res.on("error", () => proxyReq.destroy());
   req.pipe(proxyReq);
 }
 
 function proxyUpgrade(req, socket, head, target) {
+  absorbSocketError(socket);
   const headers = { ...req.headers };
   headers.host = `${target.hostname}:${target.port}`;
   const proxyReq = http.request({
@@ -98,6 +117,10 @@ const server = http.createServer((req, res) => {
     return;
   }
   proxyHttp(req, res, new URL(`http://${nextHost}:${nextPort}`));
+});
+
+server.on("clientError", (_error, socket) => {
+  socket.destroy();
 });
 
 server.on("upgrade", (req, socket, head) => {

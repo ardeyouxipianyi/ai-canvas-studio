@@ -425,6 +425,7 @@ class OpenAIBackendAPI:
         payload = {
             "action": "next",
             "fork_from_shared_post": False,
+            "conversation_id": None,
             "parent_message_id": new_uuid(),
             "model": self._image_model_slug(model),
             "client_prepare_state": "success",
@@ -564,6 +565,7 @@ class OpenAIBackendAPI:
                 "content": content,
                 "metadata": metadata,
             }],
+            "conversation_id": None,
             "parent_message_id": new_uuid(),
             "model": self._image_model_slug(model),
             "client_prepare_state": "sent",

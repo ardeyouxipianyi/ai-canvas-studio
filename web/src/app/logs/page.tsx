@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { ChevronLeft, ChevronRight, ImageIcon, LoaderCircle, RefreshCw, Search, Trash2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, Copy, ImageIcon, LoaderCircle, RefreshCw, Search, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { DateRangeFilter } from "@/components/date-range-filter";
@@ -47,6 +47,34 @@ function getStatus(item: SystemLog) {
   if (status === "success") return "成功";
   if (status === "failed") return "失败";
   return "-";
+}
+
+function formatLogForCopy(item: SystemLog) {
+  return JSON.stringify({
+    id: item.id,
+    time: item.time,
+    type: item.type,
+    summary: item.summary,
+    detail: item.detail,
+  }, null, 2);
+}
+
+async function writeClipboardText(text: string) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    const textarea = document.createElement("textarea");
+    textarea.value = text;
+    textarea.setAttribute("readonly", "true");
+    textarea.style.position = "fixed";
+    textarea.style.left = "-9999px";
+    document.body.appendChild(textarea);
+    textarea.select();
+    const ok = document.execCommand("copy");
+    textarea.remove();
+    return ok;
+  }
 }
 
 function LogsContent() {
@@ -106,6 +134,17 @@ function LogsContent() {
     setDetailLog(item);
     setLightboxIndex(index);
     setLightboxOpen(true);
+  };
+
+  const copyDetailLog = async () => {
+    if (!detailLog) return;
+    try {
+      const copied = await writeClipboardText(formatLogForCopy(detailLog));
+      if (!copied) throw new Error("copy failed");
+      toast.success("日志已复制");
+    } catch {
+      toast.error("复制失败，请手动复制");
+    }
   };
 
   const toggleIds = (ids: string[], checked: boolean) => {
@@ -283,7 +322,13 @@ function LogsContent() {
       <Dialog open={detailOpen} onOpenChange={setDetailOpen}>
         <DialogContent className="flex h-[min(88vh,860px)] w-[min(92vw,920px)] flex-col overflow-hidden rounded-2xl p-0">
           <DialogHeader className="shrink-0 border-b border-stone-100 px-6 py-5">
-            <DialogTitle>日志详情</DialogTitle>
+            <div className="flex items-center justify-between gap-3 pr-8">
+              <DialogTitle>日志详情</DialogTitle>
+              <Button variant="outline" className="h-9 rounded-xl border-stone-200 bg-white px-3 text-stone-700" onClick={() => void copyDetailLog()} disabled={!detailLog}>
+                <Copy className="size-4" />
+                复制日志
+              </Button>
+            </div>
           </DialogHeader>
           <div className="flex-1 overflow-y-auto px-6 py-5">
             <div className="space-y-4">

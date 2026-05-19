@@ -1,12 +1,13 @@
 "use client";
 
-import { DatabaseBackup, Download, LoaderCircle, Upload } from "lucide-react";
-import { useRef, useState } from "react";
+import { DatabaseBackup, Download, FileArchive, FolderOpen, LoaderCircle, Upload } from "lucide-react";
+import { useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import webConfig from "@/constants/common-env";
 import { importDataPackage, type BackupInclude } from "@/lib/api";
 import { getStoredAuthKey } from "@/store/auth";
@@ -51,31 +52,94 @@ function getFilenameFromContentDisposition(value: string | null) {
   return plainMatch?.[1] || "";
 }
 
+function selectedCount(include: BackupInclude) {
+  return transferItems.filter((item) => include[item.key]).length;
+}
+
+function setAllInclude(value: boolean): BackupInclude {
+  const next = { ...defaultInclude };
+  transferItems.forEach((item) => {
+    next[item.key] = value;
+  });
+  return next;
+}
+
+function formatFileSize(file: File | null) {
+  if (!file) return "";
+  if (file.size >= 1024 * 1024) return `${(file.size / 1024 / 1024).toFixed(1)} MB`;
+  if (file.size >= 1024) return `${(file.size / 1024).toFixed(1)} KB`;
+  return `${file.size} B`;
+}
+
+type IncludePickerProps = {
+  include: BackupInclude;
+  onChange: (include: BackupInclude) => void;
+};
+
+function IncludePicker({ include, onChange }: IncludePickerProps) {
+  const count = selectedCount(include);
+  const toggle = (key: keyof BackupInclude, value: boolean) => {
+    onChange({ ...include, [key]: value });
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2 text-sm text-stone-500">
+        <span>已选择 {count} 类数据</span>
+        <div className="flex gap-2">
+          <Button type="button" variant="outline" className="h-8 rounded-lg border-stone-200 bg-white px-3 text-stone-700" onClick={() => onChange(setAllInclude(true))}>
+            全选
+          </Button>
+          <Button type="button" variant="outline" className="h-8 rounded-lg border-stone-200 bg-white px-3 text-stone-700" onClick={() => onChange(setAllInclude(false))}>
+            清空
+          </Button>
+        </div>
+      </div>
+      <div className="grid max-h-[48vh] gap-3 overflow-y-auto pr-1 sm:grid-cols-2">
+        {transferItems.map((item) => (
+          <label key={item.key} className="flex items-start gap-3 rounded-xl border border-stone-200 bg-white px-4 py-3 text-sm text-stone-700">
+            <Checkbox checked={Boolean(include[item.key])} onCheckedChange={(checked) => toggle(item.key, Boolean(checked))} />
+            <span>
+              <span className="block font-medium text-stone-800">{item.label}</span>
+              <span className="mt-1 block text-xs text-stone-500">{item.note}</span>
+            </span>
+          </label>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function DataTransferCard() {
   const inputRef = useRef<HTMLInputElement | null>(null);
-  const [include, setInclude] = useState<BackupInclude>(defaultInclude);
+  const [exportInclude, setExportInclude] = useState<BackupInclude>(defaultInclude);
+  const [importInclude, setImportInclude] = useState<BackupInclude>(defaultInclude);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [exportOpen, setExportOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
 
-  const selectedCount = transferItems.filter((item) => include[item.key]).length;
+  const exportCount = useMemo(() => selectedCount(exportInclude), [exportInclude]);
+  const importCount = useMemo(() => selectedCount(importInclude), [importInclude]);
 
-  const setAll = (value: boolean) => {
-    setInclude((current) => {
-      const next = { ...current };
-      transferItems.forEach((item) => {
-        next[item.key] = value;
-      });
-      return next;
-    });
+  const openImportFilePicker = () => {
+    if (inputRef.current) {
+      inputRef.current.value = "";
+      inputRef.current.click();
+    }
   };
 
-  const toggle = (key: keyof BackupInclude, value: boolean) => {
-    setInclude((current) => ({ ...current, [key]: value }));
+  const handleFileSelected = (file: File | null) => {
+    setSelectedFile(file);
+    if (file) {
+      setImportInclude(defaultInclude);
+      setImportOpen(true);
+    }
   };
 
   const handleExport = async () => {
-    if (selectedCount === 0) {
+    if (exportCount === 0) {
       toast.error("请至少选择一类要导出的数据");
       return;
     }
@@ -92,7 +156,7 @@ export function DataTransferCard() {
           Authorization: `Bearer ${authKey}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ include }),
+        body: JSON.stringify({ include: exportInclude }),
       });
       if (!response.ok) {
         const data = await response.json().catch(() => null) as { detail?: { error?: string }; error?: string } | null;
@@ -107,6 +171,7 @@ export function DataTransferCard() {
       anchor.click();
       anchor.remove();
       window.URL.revokeObjectURL(url);
+      setExportOpen(false);
       toast.success("数据导出已开始下载");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "导出失败");
@@ -116,7 +181,7 @@ export function DataTransferCard() {
   };
 
   const handleImport = async () => {
-    if (selectedCount === 0) {
+    if (importCount === 0) {
       toast.error("请至少选择一类要导入的数据");
       return;
     }
@@ -126,12 +191,14 @@ export function DataTransferCard() {
     }
     setIsImporting(true);
     try {
-      const data = await importDataPackage(selectedFile, include);
+      const data = await importDataPackage(selectedFile, importInclude);
       const imported = data.result.imported?.join("、") || "无";
       toast.success(`导入完成：${imported}`);
-      if (include.config || include.auth_keys_snapshot) {
+      if (importInclude.config || importInclude.auth_keys_snapshot) {
         toast.info("如果导入了系统配置或用户密钥，建议刷新页面后继续操作");
       }
+      setImportOpen(false);
+      setSelectedFile(null);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "导入失败");
     } finally {
@@ -140,61 +207,104 @@ export function DataTransferCard() {
   };
 
   return (
-    <Card className="rounded-2xl border-white/80 bg-white/90 shadow-sm">
-      <CardContent className="space-y-5 p-6">
-        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-          <div className="flex items-center gap-3">
-            <div className="flex size-10 items-center justify-center rounded-xl bg-stone-950 text-white">
-              <DatabaseBackup className="size-4" />
-            </div>
-            <div>
-              <h2 className="text-base font-semibold text-stone-950">配置数据导入导出</h2>
-              <p className="mt-1 text-sm text-stone-500">手动迁移当前程序数据，可选择是否包含生成图片。</p>
+    <>
+      <Card className="rounded-2xl border-white/80 bg-white/90 shadow-sm">
+        <CardContent className="space-y-5 p-6">
+          <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+            <div className="flex items-center gap-3">
+              <div className="flex size-10 items-center justify-center rounded-xl bg-stone-950 text-white">
+                <DatabaseBackup className="size-4" />
+              </div>
+              <div>
+                <h2 className="text-base font-semibold text-stone-950">配置数据导入导出</h2>
+                <p className="mt-1 text-sm text-stone-500">手动迁移当前程序数据，导入和导出前再选择具体范围。</p>
+              </div>
             </div>
           </div>
-          <div className="flex gap-2">
-            <Button type="button" variant="outline" className="h-9 rounded-xl border-stone-200 bg-white px-4 text-stone-700" onClick={() => setAll(true)}>
-              全选
-            </Button>
-            <Button type="button" variant="outline" className="h-9 rounded-xl border-stone-200 bg-white px-4 text-stone-700" onClick={() => setAll(false)}>
-              清空
-            </Button>
-          </div>
-        </div>
 
-        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-          {transferItems.map((item) => (
-            <label key={item.key} className="flex items-start gap-3 rounded-xl border border-stone-200 bg-white px-4 py-3 text-sm text-stone-700">
-              <Checkbox checked={Boolean(include[item.key])} onCheckedChange={(checked) => toggle(item.key, Boolean(checked))} />
-              <span>
-                <span className="block font-medium text-stone-800">{item.label}</span>
-                <span className="mt-1 block text-xs text-stone-500">{item.note}</span>
+          <div className="grid gap-3 md:grid-cols-2">
+            <button
+              type="button"
+              className="flex min-h-28 items-center gap-4 rounded-xl border border-dashed border-stone-300 bg-stone-50 px-5 py-4 text-left transition hover:border-stone-400 hover:bg-white"
+              onClick={openImportFilePicker}
+              disabled={isImporting}
+            >
+              <span className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-white text-stone-700 shadow-sm">
+                <FolderOpen className="size-5" />
               </span>
-            </label>
-          ))}
-        </div>
+              <span className="min-w-0">
+                <span className="block text-sm font-semibold text-stone-900">导入数据</span>
+                <span className="mt-1 block text-sm text-stone-500">选择备份文件后，再确认要导入的数据类别。</span>
+              </span>
+            </button>
 
-        <div className="grid gap-3 rounded-xl border border-stone-200 bg-stone-50 px-4 py-4 md:grid-cols-[1fr_auto_auto] md:items-center">
+            <button
+              type="button"
+              className="flex min-h-28 items-center gap-4 rounded-xl border border-stone-200 bg-stone-50 px-5 py-4 text-left transition hover:border-stone-300 hover:bg-white"
+              onClick={() => setExportOpen(true)}
+              disabled={isExporting}
+            >
+              <span className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-white text-stone-700 shadow-sm">
+                <FileArchive className="size-5" />
+              </span>
+              <span className="min-w-0">
+                <span className="block text-sm font-semibold text-stone-900">导出备份</span>
+                <span className="mt-1 block text-sm text-stone-500">先选择导出范围，再下载一个可迁移的数据包。</span>
+              </span>
+            </button>
+          </div>
+
           <input
             ref={inputRef}
             type="file"
             accept=".tar.gz,.gz,application/gzip,application/x-gzip"
             className="hidden"
-            onChange={(event) => setSelectedFile(event.target.files?.[0] ?? null)}
+            onChange={(event) => handleFileSelected(event.target.files?.[0] ?? null)}
           />
-          <button type="button" className="truncate rounded-xl border border-stone-200 bg-white px-4 py-2 text-left text-sm text-stone-600" onClick={() => inputRef.current?.click()}>
-            {selectedFile ? selectedFile.name : "选择要导入的数据包"}
-          </button>
-          <Button type="button" variant="outline" className="h-10 rounded-xl border-stone-200 bg-white px-4 text-stone-700" onClick={() => void handleImport()} disabled={isImporting}>
-            {isImporting ? <LoaderCircle className="size-4 animate-spin" /> : <Upload className="size-4" />}
-            导入所选
-          </Button>
-          <Button type="button" className="h-10 rounded-xl bg-stone-950 px-4 text-white hover:bg-stone-800" onClick={() => void handleExport()} disabled={isExporting}>
-            {isExporting ? <LoaderCircle className="size-4 animate-spin" /> : <Download className="size-4" />}
-            导出所选
-          </Button>
-        </div>
-      </CardContent>
-    </Card>
+        </CardContent>
+      </Card>
+
+      <Dialog open={importOpen} onOpenChange={(open) => { if (!isImporting) setImportOpen(open); }}>
+        <DialogContent showCloseButton={false} className="max-h-[88vh] max-w-3xl overflow-hidden rounded-2xl p-6">
+          <DialogHeader className="gap-2">
+            <DialogTitle>选择要导入的数据</DialogTitle>
+            <DialogDescription className="text-sm leading-6">
+              {selectedFile ? `文件：${selectedFile.name} · ${formatFileSize(selectedFile)}` : "请选择要导入的数据包。"}
+            </DialogDescription>
+          </DialogHeader>
+          <IncludePicker include={importInclude} onChange={setImportInclude} />
+          <DialogFooter className="pt-2">
+            <Button variant="outline" className="rounded-xl" onClick={() => setImportOpen(false)} disabled={isImporting}>
+              取消
+            </Button>
+            <Button className="rounded-xl bg-stone-950 text-white hover:bg-stone-800" onClick={() => void handleImport()} disabled={isImporting || importCount === 0 || !selectedFile}>
+              {isImporting ? <LoaderCircle className="size-4 animate-spin" /> : <Upload className="size-4" />}
+              确认导入
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={exportOpen} onOpenChange={(open) => { if (!isExporting) setExportOpen(open); }}>
+        <DialogContent showCloseButton={false} className="max-h-[88vh] max-w-3xl overflow-hidden rounded-2xl p-6">
+          <DialogHeader className="gap-2">
+            <DialogTitle>选择要导出的数据</DialogTitle>
+            <DialogDescription className="text-sm leading-6">
+              只导出勾选的数据类别；包含生成图片时，备份包会明显变大。
+            </DialogDescription>
+          </DialogHeader>
+          <IncludePicker include={exportInclude} onChange={setExportInclude} />
+          <DialogFooter className="pt-2">
+            <Button variant="outline" className="rounded-xl" onClick={() => setExportOpen(false)} disabled={isExporting}>
+              取消
+            </Button>
+            <Button className="rounded-xl bg-stone-950 text-white hover:bg-stone-800" onClick={() => void handleExport()} disabled={isExporting || exportCount === 0}>
+              {isExporting ? <LoaderCircle className="size-4 animate-spin" /> : <Download className="size-4" />}
+              确认导出
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }

@@ -33,14 +33,17 @@ if (-not $SkipWebBuild) {
     Push-Location (Join-Path $repoRoot "web")
     try {
         if (Test-Path (Join-Path $runtimePath "node\npm.cmd")) {
-            & (Join-Path $runtimePath "node\npm.cmd") install
+            & (Join-Path $runtimePath "node\npm.cmd") install --no-package-lock
             & (Join-Path $runtimePath "node\npm.cmd") run build
         } else {
-            npm install
+            npm install --no-package-lock
             npm run build
         }
     } finally {
         Pop-Location
+    }
+    if (Test-Path (Join-Path $repoRoot "web\out")) {
+        Copy-Directory (Join-Path $repoRoot "web\out") (Join-Path $repoRoot "web_dist")
     }
 }
 
