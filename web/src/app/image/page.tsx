@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type WheelEvent } from "react";
 import { History, LoaderCircle, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -201,6 +201,30 @@ function sleep(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
+function isNearResultsBottom(viewport: HTMLDivElement) {
+  return viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 160;
+}
+
+function clampResultsScrollTop(viewport: HTMLDivElement, top: number) {
+  return Math.max(0, Math.min(top, Math.max(0, viewport.scrollHeight - viewport.clientHeight)));
+}
+
+function setResultsScrollTop(viewport: HTMLDivElement, top: number) {
+  const nextTop = clampResultsScrollTop(viewport, top);
+  viewport.scrollTop = nextTop;
+  viewport.scrollTo({ top: nextTop, behavior: "auto" });
+}
+
+function getWheelDeltaY(event: WheelEvent<HTMLDivElement>, viewport: HTMLDivElement) {
+  if (event.deltaMode === 1) {
+    return event.deltaY * 32;
+  }
+  if (event.deltaMode === 2) {
+    return event.deltaY * viewport.clientHeight;
+  }
+  return event.deltaY;
+}
+
 function pickFallbackConversationId(conversations: ImageConversation[]) {
   const activeConversation = conversations.find((conversation) =>
     conversation.turns.some((turn) => turn.status === "queued" || turn.status === "generating"),
@@ -382,6 +406,12 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
   const resultsViewportRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const stickToBottomRef = useRef(true);
+  const suppressAutoFollowUntilRef = useRef(0);
+  const autoScrollSnapshotRef = useRef<{ conversationId: string | null; turnCount: number }>({
+    conversationId: null,
+    turnCount: 0,
+  });
 
   const [imagePrompt, setImagePrompt] = useState("");
   const [imageCount, setImageCount] = useState("1");
@@ -515,24 +545,52 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
   }, [isAdmin, loadQuota]);
 
   useEffect(() => {
-    if (!selectedConversation) {
+    const viewport = resultsViewportRef.current;
+    if (!selectedConversation || !viewport) {
+      autoScrollSnapshotRef.current = { conversationId: null, turnCount: 0 };
       return;
     }
 
-    resultsViewportRef.current?.scrollTo({
-      top: resultsViewportRef.current.scrollHeight,
-      behavior: "smooth",
+    const previous = autoScrollSnapshotRef.current;
+    const conversationChanged = previous.conversationId !== selectedConversation.id;
+    const turnAdded = !conversationChanged && selectedConversation.turns.length > previous.turnCount;
+    const shouldScroll =
+      conversationChanged || turnAdded || (stickToBottomRef.current && Date.now() > suppressAutoFollowUntilRef.current);
+
+    autoScrollSnapshotRef.current = {
+      conversationId: selectedConversation.id,
+      turnCount: selectedConversation.turns.length,
+    };
+
+    if (!shouldScroll) {
+      return;
+    }
+
+    window.requestAnimationFrame(() => {
+      setResultsScrollTop(viewport, viewport.scrollHeight);
+      stickToBottomRef.current = true;
     });
-  }, [selectedConversation?.updatedAt, selectedConversation?.turns.length, selectedConversation]);
+  }, [selectedConversation?.id, selectedConversation?.updatedAt, selectedConversation?.turns.length]);
 
   useEffect(() => {
     setActiveTurnId(selectedConversation?.turns.at(-1)?.id ?? null);
   }, [selectedConversation?.id]);
 
+  const pauseAutoFollow = useCallback((durationMs = 1200) => {
+    stickToBottomRef.current = false;
+    suppressAutoFollowUntilRef.current = Date.now() + durationMs;
+  }, []);
+
   const updateActiveTurnFromScroll = useCallback(() => {
     const viewport = resultsViewportRef.current;
     if (!viewport) {
       return;
+    }
+    const nearBottom = isNearResultsBottom(viewport);
+    if (nearBottom && Date.now() > suppressAutoFollowUntilRef.current) {
+      stickToBottomRef.current = true;
+    } else if (!nearBottom) {
+      stickToBottomRef.current = false;
     }
     const nodes = Array.from(viewport.querySelectorAll<HTMLElement>("[data-image-turn-id]"));
     if (nodes.length === 0) {
@@ -552,20 +610,66 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
     setActiveTurnId(closest.getAttribute("data-image-turn-id"));
   }, []);
 
+  const handleResultsWheel = useCallback((event: WheelEvent<HTMLDivElement>) => {
+    const viewport = event.currentTarget;
+    if (event.deltaY < 0) {
+      pauseAutoFollow();
+      return;
+    }
+    window.requestAnimationFrame(() => {
+      if (isNearResultsBottom(viewport) && Date.now() > suppressAutoFollowUntilRef.current) {
+        stickToBottomRef.current = true;
+      }
+    });
+  }, [pauseAutoFollow]);
+
   const scrollToTurn = useCallback((turnId: string) => {
     const viewport = resultsViewportRef.current;
     if (!viewport) {
       return;
     }
-    const target = Array.from(viewport.querySelectorAll<HTMLElement>("[data-image-turn-id]")).find(
+    const turnNodes = Array.from(viewport.querySelectorAll<HTMLElement>("[data-image-turn-id]"));
+    const target = turnNodes.find(
       (node) => node.getAttribute("data-image-turn-id") === turnId,
     );
     if (!target) {
       return;
     }
-    target.scrollIntoView({ behavior: "smooth", block: "start" });
+    const isLastTurn = target === turnNodes.at(-1);
+    if (isLastTurn) {
+      suppressAutoFollowUntilRef.current = 0;
+      stickToBottomRef.current = true;
+    } else {
+      pauseAutoFollow(2500);
+    }
+    const viewportRect = viewport.getBoundingClientRect();
+    const targetRect = target.getBoundingClientRect();
+    const nextTop = viewport.scrollTop + targetRect.top - viewportRect.top - 16;
+    target.scrollIntoView({ block: "start", inline: "nearest", behavior: "auto" });
+    setResultsScrollTop(viewport, nextTop);
+    window.requestAnimationFrame(() => {
+      target.scrollIntoView({ block: "start", inline: "nearest", behavior: "auto" });
+      setResultsScrollTop(viewport, nextTop);
+    });
     setActiveTurnId(turnId);
-  }, []);
+  }, [pauseAutoFollow]);
+
+  const handleTurnRailWheel = useCallback((event: WheelEvent<HTMLDivElement>) => {
+    const viewport = resultsViewportRef.current;
+    if (!viewport) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    pauseAutoFollow();
+    setResultsScrollTop(viewport, viewport.scrollTop + getWheelDeltaY(event, viewport));
+    window.requestAnimationFrame(() => {
+      if (isNearResultsBottom(viewport) && Date.now() > suppressAutoFollowUntilRef.current) {
+        stickToBottomRef.current = true;
+      }
+    });
+  }, [pauseAutoFollow]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -1477,7 +1581,8 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
 
           <div
             ref={resultsViewportRef}
-            className="image-results-scrollbar min-h-0 flex-1 scroll-smooth overscroll-contain overflow-y-auto px-1 py-2 pr-3 sm:px-4 sm:py-4 md:pr-14"
+            className="image-results-scrollbar min-h-0 flex-1 overscroll-contain overflow-y-auto px-1 py-2 pr-3 sm:px-4 sm:py-4 md:pr-14"
+            onWheel={handleResultsWheel}
             onScroll={updateActiveTurnFromScroll}
           >
             <ImageResults
@@ -1499,9 +1604,16 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
           {selectedConversation && selectedConversation.turns.length > 0 ? (
             <nav
               aria-label="对话轮次跳转"
-              className="pointer-events-none absolute top-14 right-1 bottom-[8.5rem] hidden items-center md:flex"
+              className="pointer-events-none absolute top-14 right-1 bottom-[8.5rem] hidden md:block"
             >
-              <div className="pointer-events-auto flex max-h-full flex-col gap-1 overflow-y-auto rounded-full border border-stone-200/80 bg-white/90 p-1.5 shadow-[0_16px_50px_-28px_rgba(15,23,42,0.45)] backdrop-blur">
+              <div
+                data-image-turn-rail
+                className="pointer-events-auto flex h-full max-h-full flex-col items-center gap-1 overflow-y-auto overscroll-contain rounded-full border border-stone-200/80 bg-white/90 p-1.5 shadow-[0_16px_50px_-28px_rgba(15,23,42,0.45)] backdrop-blur [scrollbar-width:thin]"
+                onWheel={handleTurnRailWheel}
+                onScroll={() => {
+                  pauseAutoFollow(900);
+                }}
+              >
                 {selectedConversation.turns.map((turn, index) => {
                   const active = turn.id === activeTurnId;
                   return (
