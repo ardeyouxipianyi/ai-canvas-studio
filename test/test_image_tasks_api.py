@@ -10,12 +10,18 @@ import api.image_tasks as image_tasks_module
 
 
 AUTH_HEADERS = {"Authorization": "Bearer chatgpt2api"}
+AUTH_IDENTITY = {"id": "admin", "name": "Admin", "role": "admin"}
+
+
+async def allow_filter_or_log(_call, _text):
+    return None
 
 
 class FakeImageTaskService:
     def __init__(self):
         self.generation_calls = []
         self.edit_calls = []
+        self.reverse_prompt_calls = []
         self.cancel_calls = []
 
     def submit_generation(self, identity, **kwargs):
@@ -35,6 +41,16 @@ class FakeImageTaskService:
             "id": kwargs["client_task_id"],
             "status": "queued",
             "mode": "edit",
+            "created_at": "2026-01-01 00:00:00",
+            "updated_at": "2026-01-01 00:00:00",
+        }
+
+    def submit_reverse_prompt(self, identity, **kwargs):
+        self.reverse_prompt_calls.append((identity, kwargs))
+        return {
+            "id": kwargs["client_task_id"],
+            "status": "queued",
+            "mode": "reverse_prompt",
             "created_at": "2026-01-01 00:00:00",
             "updated_at": "2026-01-01 00:00:00",
         }
@@ -80,8 +96,14 @@ class ImageTasksApiTests(unittest.TestCase):
     def setUp(self):
         self.fake_service = FakeImageTaskService()
         self.service_patcher = mock.patch.object(image_tasks_module, "image_task_service", self.fake_service)
+        self.identity_patcher = mock.patch.object(image_tasks_module, "require_identity", return_value=AUTH_IDENTITY)
+        self.filter_patcher = mock.patch.object(image_tasks_module, "filter_or_log", new=allow_filter_or_log)
         self.service_patcher.start()
+        self.identity_patcher.start()
+        self.filter_patcher.start()
         self.addCleanup(self.service_patcher.stop)
+        self.addCleanup(self.identity_patcher.stop)
+        self.addCleanup(self.filter_patcher.stop)
         app = FastAPI()
         app.include_router(image_tasks_module.create_router())
         self.client = TestClient(app)
@@ -158,6 +180,27 @@ class ImageTasksApiTests(unittest.TestCase):
         self.assertEqual(images[0][1], "one.png")
         self.assertEqual(images[1][0], b"two")
         self.assertEqual(images[1][1], "two.png")
+
+    def test_create_reverse_prompt_task_accepts_json_image_source(self):
+        response = self.client.post(
+            "/api/image-tasks/reverse-prompts",
+            headers=AUTH_HEADERS,
+            json={
+                "client_task_id": "reverse-json",
+                "prompt": "describe this image",
+                "model": "gpt-image-2",
+                "image": {"data": "data:image/png;base64,b25l", "filename": "input.png"},
+            },
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["id"], "reverse-json")
+        self.assertEqual(response.json()["mode"], "reverse_prompt")
+        self.assertEqual(len(self.fake_service.reverse_prompt_calls), 1)
+        images = self.fake_service.reverse_prompt_calls[0][1]["images"]
+        self.assertEqual(images[0][0], b"one")
+        self.assertEqual(images[0][1], "input.png")
+        self.assertEqual(images[0][2], "image/png")
 
     def test_list_tasks_reports_missing_ids(self):
         response = self.client.get("/api/image-tasks?ids=task-1,missing", headers=AUTH_HEADERS)

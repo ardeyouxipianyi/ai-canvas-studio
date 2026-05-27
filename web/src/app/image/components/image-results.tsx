@@ -375,6 +375,10 @@ export function ImageResults({
                         );
                       }
 
+                      const rawProgress = Number(image.progress ?? (turn.status === "queued" ? 0 : 15));
+                      const progress = Number.isFinite(rawProgress) ? Math.max(0, Math.min(100, Math.round(rawProgress))) : 0;
+                      const progressText = image.progressMessage || (turn.status === "queued" ? "排队中" : "处理中");
+
                       return (
                         <div
                           key={image.id}
@@ -396,7 +400,13 @@ export function ImageResults({
                                 <LoaderCircle className="size-4 animate-spin sm:size-5" />
                               )}
                             </div>
-                            <p className="text-[10px] leading-4 sm:text-sm">{turn.status === "queued" ? "排队中" : "处理中"}</p>
+                            <div className="w-full max-w-40 space-y-1">
+                              <p className="text-[10px] leading-4 sm:text-sm">{progressText}</p>
+                              <div className="h-1.5 overflow-hidden rounded-full bg-white shadow-inner">
+                                <div className="h-full rounded-full bg-stone-700 transition-all" style={{ width: `${progress}%` }} />
+                              </div>
+                              <p className="text-[10px] text-stone-400">{progress}%</p>
+                            </div>
                           </div>
                         </div>
                       );

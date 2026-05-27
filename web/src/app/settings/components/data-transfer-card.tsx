@@ -121,6 +121,7 @@ export function DataTransferCard() {
   const [importOpen, setImportOpen] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
+  const [includeSensitive, setIncludeSensitive] = useState(false);
 
   const exportCount = useMemo(() => selectedCount(exportInclude), [exportInclude]);
   const importCount = useMemo(() => selectedCount(importInclude), [importInclude]);
@@ -158,7 +159,7 @@ export function DataTransferCard() {
           Authorization: `Bearer ${authKey}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ include: exportInclude }),
+        body: JSON.stringify({ include: exportInclude, include_sensitive: includeSensitive }),
       });
       if (!response.ok) {
         const data = await response.json().catch(() => null) as { detail?: { error?: string }; error?: string } | null;
@@ -295,6 +296,15 @@ export function DataTransferCard() {
               只导出勾选的数据类别；包含生成图片时，备份包会明显变大。
             </DialogDescription>
           </DialogHeader>
+          <label className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+            <Checkbox checked={includeSensitive} onCheckedChange={(checked) => setIncludeSensitive(Boolean(checked))} />
+            <span>
+              <span className="block font-medium">包含敏感数据，生成完整迁移包</span>
+              <span className="mt-1 block text-xs leading-5 text-amber-800">
+                默认导出会脱敏账号 Token、用户密钥哈希、管理员密码哈希、R2 密钥等内容。只有换服务器或完整恢复时才建议开启。
+              </span>
+            </span>
+          </label>
           <IncludePicker include={exportInclude} onChange={setExportInclude} />
           <DialogFooter className="pt-2">
             <Button variant="outline" className="rounded-xl" onClick={() => setExportOpen(false)} disabled={isExporting}>

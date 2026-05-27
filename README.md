@@ -37,11 +37,14 @@ cd chatgpt2api
 docker compose up -d
 ```
 
-启动前请先在 `config.json` 中设置 `auth-key`，也可以在 `docker-compose.yml` 中通过 `CHATGPT2API_AUTH_KEY` 覆盖。
+运行时配置会保存到 `data/config.json`。首次部署如果仍是默认密码，打开网页会先进入管理员密码设置页；设置完成后再进入系统。管理员密码会以哈希形式保存，不再明文写入运行配置。也可以在 `docker-compose.yml` 中通过 `CHATGPT2API_AUTH_KEY` 固定管理员密码。
 
 - Web 面板：`http://localhost:3000`
 - API 地址：`http://localhost:3000/v1`
 - 数据目录：`./data`
+- 运行时配置：`./data/config.json`
+
+管理员可以在设置页创建普通用户密钥。普通用户密钥会按用户隔离画图历史、画布项目和图片任务，并记录调用次数、成功/失败次数、图片调用数、产出图片数与平均耗时。调用日志会自动脱敏常见 token、密钥、cookie、Authorization 等敏感内容。
 
 ### Windows 绿色版
 

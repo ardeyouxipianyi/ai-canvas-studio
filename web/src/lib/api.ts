@@ -91,6 +91,7 @@ export type SettingsConfig = {
   auto_remove_invalid_accounts?: boolean;
   auto_remove_rate_limited_accounts?: boolean;
   admin_auth_key_editable?: boolean;
+  setup_required?: boolean;
   log_levels?: string[];
   backup?: BackupSettings;
   backup_state?: BackupState;
@@ -151,6 +152,8 @@ export type BackupDetail = {
   trigger?: string | null;
   app_version?: string | null;
   storage_backend?: Record<string, unknown> | null;
+  sensitive_included?: boolean | null;
+  redacted?: boolean | null;
   files: Array<{
     name: string;
     exists: boolean;
@@ -196,13 +199,16 @@ export type ImageResponse = {
 export type ImageTask = {
   id: string;
   status: "queued" | "running" | "success" | "error" | "cancelled";
-  mode: "generate" | "edit";
+  mode: "generate" | "edit" | "reverse_prompt";
   model?: ImageModel;
   size?: string;
+  progress?: number;
+  progress_message?: string;
   created_at: string;
   updated_at: string;
   data?: Array<{ b64_json?: string; url?: string; revised_prompt?: string }>;
   error?: string;
+  message?: string;
 };
 
 export type ImagePromptSource = string | { url?: string; data?: string; base64?: string; mime?: string; filename?: string };
@@ -227,6 +233,12 @@ export type LoginResponse = {
   name: string;
 };
 
+export type SetupStatusResponse = {
+  setup_required: boolean;
+  admin_auth_key_editable: boolean;
+  version: string;
+};
+
 export type UserKey = {
   id: string;
   name: string;
@@ -234,6 +246,19 @@ export type UserKey = {
   enabled: boolean;
   created_at: string | null;
   last_used_at: string | null;
+  usage?: {
+    total_calls?: number;
+    successful_calls?: number;
+    failed_calls?: number;
+    image_calls?: number;
+    image_successful_calls?: number;
+    image_failed_calls?: number;
+    generated_images?: number;
+    total_duration_ms?: number;
+    last_call_at?: string | null;
+    last_success_at?: string | null;
+    last_failure_at?: string | null;
+  };
 };
 
 export type RegisterConfig = {
@@ -281,6 +306,22 @@ export async function login(authKey: string) {
     body: {},
     headers: {
       Authorization: `Bearer ${normalizedAuthKey}`,
+    },
+    redirectOnUnauthorized: false,
+  });
+}
+
+export async function fetchSetupStatus() {
+  return httpRequest<SetupStatusResponse>("/auth/setup-status", {
+    redirectOnUnauthorized: false,
+  });
+}
+
+export async function initializeAdminPassword(newKey: string) {
+  return httpRequest<LoginResponse>("/auth/setup", {
+    method: "POST",
+    body: {
+      new_key: newKey,
     },
     redirectOnUnauthorized: false,
   });
@@ -464,6 +505,23 @@ export async function createImageEditTaskFromSources(
       prompt,
       ...(model ? { model } : {}),
       ...(size ? { size } : {}),
+    },
+  });
+}
+
+export async function createReversePromptTask(
+  clientTaskId: string,
+  image: ImagePromptSource,
+  instruction?: string,
+  model?: ImageModel,
+) {
+  return httpRequest<ImageTask>("/api/image-tasks/reverse-prompts", {
+    method: "POST",
+    body: {
+      client_task_id: clientTaskId,
+      image,
+      prompt: instruction?.trim() || DEFAULT_REVERSE_PROMPT_INSTRUCTION,
+      model: model || "gpt-image-2",
     },
   });
 }

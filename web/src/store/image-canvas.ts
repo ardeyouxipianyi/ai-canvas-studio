@@ -24,10 +24,13 @@ export type ImageCanvasNode = {
   sourceNodeId?: string;
   taskId?: string;
   status: ImageCanvasNodeStatus;
+  progress?: number;
+  progressMessage?: string;
   b64_json?: string;
   url?: string;
   revised_prompt?: string;
   error?: string;
+  favorite?: boolean;
   createdAt: string;
   updatedAt: string;
 };
@@ -96,6 +99,10 @@ function normalizeNumber(value: unknown, fallback: number) {
   return Number.isFinite(numberValue) ? numberValue : fallback;
 }
 
+function normalizeProgress(value: unknown, fallback: number) {
+  return Math.max(0, Math.min(100, Math.round(normalizeNumber(value, fallback))));
+}
+
 function normalizeNode(node: ImageCanvasNode & Record<string, unknown>): ImageCanvasNode {
   const now = new Date().toISOString();
   const type: ImageCanvasNodeType = node.type === "edit" || node.type === "image" ? node.type : "prompt";
@@ -128,10 +135,13 @@ function normalizeNode(node: ImageCanvasNode & Record<string, unknown>): ImageCa
     sourceNodeId: typeof node.sourceNodeId === "string" ? node.sourceNodeId : undefined,
     taskId: typeof node.taskId === "string" ? node.taskId : undefined,
     status,
+    progress: normalizeProgress(node.progress, status === "success" || status === "error" || status === "cancelled" ? 100 : 0),
+    progressMessage: typeof node.progressMessage === "string" ? node.progressMessage : undefined,
     b64_json: typeof node.b64_json === "string" ? node.b64_json : undefined,
     url: typeof node.url === "string" ? node.url : undefined,
     revised_prompt: typeof node.revised_prompt === "string" ? node.revised_prompt : undefined,
     error: typeof node.error === "string" ? node.error : undefined,
+    favorite: Boolean(node.favorite),
     createdAt: String(node.createdAt || now),
     updatedAt: String(node.updatedAt || node.createdAt || now),
   };

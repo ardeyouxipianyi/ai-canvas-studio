@@ -3,7 +3,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Condition, Lock, Thread
 from typing import Any
-from datetime import datetime
+from datetime import datetime, timezone
 import time
 import uuid
 
@@ -116,7 +116,62 @@ class AccountService:
         normalized["success"] = int(normalized.get("success") or 0)
         normalized["fail"] = int(normalized.get("fail") or 0)
         normalized["last_used_at"] = normalized.get("last_used_at")
+        normalized["last_failed_at"] = normalized.get("last_failed_at") or None
+        normalized["last_failure_reason"] = str(normalized.get("last_failure_reason") or "").strip()
+        normalized["last_selected_at"] = normalized.get("last_selected_at") or None
         return normalized
+
+    @staticmethod
+    def _parse_time(value: object) -> float:
+        text = str(value or "").strip()
+        if not text:
+            return 0.0
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S"):
+            try:
+                return datetime.strptime(text[:26], fmt).timestamp()
+            except ValueError:
+                continue
+        try:
+            return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+        except Exception:
+            return 0.0
+
+    def _image_account_score(self, account: dict, token: str, *, now: float | None = None) -> float:
+        now = time.time() if now is None else now
+        success = max(0, int(account.get("success") or 0))
+        fail = max(0, int(account.get("fail") or 0))
+        quota = max(0, int(account.get("quota") or 0))
+        inflight = max(0, int(self._image_inflight.get(token, 0)))
+        total = success + fail
+        success_rate = (success + 1) / (total + 2)
+        score = success_rate * 100.0
+        score += min(quota, 20) * 2.0
+        if bool(account.get("image_quota_unknown")):
+            score += 8.0
+        score -= inflight * 35.0
+        score -= min(fail, 20) * 1.5
+        last_failed_at = self._parse_time(account.get("last_failed_at"))
+        if last_failed_at:
+            age = max(0.0, now - last_failed_at)
+            penalty_window = max(60, int(config.image_account_failure_cooldown_secs or 60) * 3)
+            score -= max(0.0, 30.0 * (1.0 - min(age, penalty_window) / penalty_window))
+        last_selected_at = self._parse_time(account.get("last_selected_at") or account.get("last_used_at"))
+        if last_selected_at:
+            age = max(0.0, now - last_selected_at)
+            score += min(age / 60.0, 10.0)
+        return score
+
+    def _rank_candidate_tokens(self, tokens: list[str]) -> list[str]:
+        now = time.time()
+        return sorted(
+            tokens,
+            key=lambda token: (
+                self._image_account_score(self._accounts.get(token, {}), token, now=now),
+                str(self._accounts.get(token, {}).get("last_selected_at") or ""),
+                token,
+            ),
+            reverse=True,
+        )
 
     def list_tokens(self) -> list[str]:
         with self._lock:
@@ -175,9 +230,18 @@ class AccountService:
                     raise RuntimeError("no available image quota")
                 tokens = self._list_available_candidate_tokens(excluded_tokens)
                 if tokens:
-                    access_token = tokens[self._index % len(tokens)]
+                    ranked_tokens = self._rank_candidate_tokens(tokens)
+                    access_token = ranked_tokens[0]
                     self._index += 1
                     self._image_inflight[access_token] = int(self._image_inflight.get(access_token, 0)) + 1
+                    current = self._accounts.get(access_token)
+                    if current is not None:
+                        next_item = dict(current)
+                        next_item["last_selected_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        account = self._normalize_account(next_item)
+                        if account is not None:
+                            self._accounts[access_token] = account
+                            self._save_accounts()
                     return access_token
                 self._image_slot_condition.wait(timeout=1.0)
 
@@ -365,6 +429,7 @@ class AccountService:
             if success:
                 self._image_cooldowns.pop(access_token, None)
                 next_item["success"] = int(next_item.get("success") or 0) + 1
+                next_item["last_failure_reason"] = ""
                 if not image_quota_unknown:
                     next_item["quota"] = max(0, int(next_item.get("quota") or 0) - 1)
                 if not image_quota_unknown and next_item["quota"] == 0:
@@ -374,6 +439,8 @@ class AccountService:
                     next_item["status"] = "正常"
             else:
                 next_item["fail"] = int(next_item.get("fail") or 0) + 1
+                next_item["last_failed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                next_item["last_failure_reason"] = "image_generation_failed"
             account = self._normalize_account(next_item)
             if account is None:
                 return None
@@ -398,6 +465,8 @@ class AccountService:
             next_item = dict(current)
             next_item["last_used_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             next_item["fail"] = int(next_item.get("fail") or 0) + 1
+            next_item["last_failed_at"] = next_item["last_used_at"]
+            next_item["last_failure_reason"] = "image_quota_limited"
             next_item["quota"] = 0
             next_item["image_quota_unknown"] = False
             next_item["status"] = "限流"

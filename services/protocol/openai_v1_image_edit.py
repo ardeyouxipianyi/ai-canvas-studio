@@ -20,6 +20,7 @@ def handle(body: dict[str, Any]) -> dict[str, Any] | Iterator[dict[str, Any]]:
     size = body.get("size")
     response_format = str(body.get("response_format") or "b64_json")
     base_url = str(body.get("base_url") or "") or None
+    owner_id = str(body.get("owner_id") or "") or None
     message_as_error = body.get("message_as_error")
     if message_as_error is None:
         message_as_error = True
@@ -36,6 +37,7 @@ def handle(body: dict[str, Any]) -> dict[str, Any] | Iterator[dict[str, Any]]:
         response_format=response_format,
         base_url=base_url,
         images=encoded_images,
+        owner_id=owner_id,
         message_as_error=bool(message_as_error),
     ))
     if body.get("stream"):

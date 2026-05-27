@@ -18,6 +18,8 @@ export type StoredImage = {
   id: string;
   taskId?: string;
   status?: "loading" | "success" | "error";
+  progress?: number;
+  progressMessage?: string;
   b64_json?: string;
   url?: string;
   revised_prompt?: string;
@@ -80,6 +82,8 @@ function normalizeStoredImage(image: StoredImage): StoredImage {
   const normalized = {
     ...image,
     taskId: typeof image.taskId === "string" && image.taskId ? image.taskId : undefined,
+    progress: typeof image.progress === "number" && Number.isFinite(image.progress) ? Math.max(0, Math.min(100, Math.round(image.progress))) : undefined,
+    progressMessage: typeof image.progressMessage === "string" ? image.progressMessage : undefined,
     url: typeof image.url === "string" && image.url ? image.url : undefined,
     revised_prompt: typeof image.revised_prompt === "string" ? image.revised_prompt : undefined,
   };

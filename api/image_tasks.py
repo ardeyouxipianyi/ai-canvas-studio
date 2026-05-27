@@ -20,6 +20,14 @@ class ImageGenerationTaskRequest(BaseModel):
     size: str | None = None
 
 
+class ReversePromptTaskRequest(BaseModel):
+    client_task_id: str = Field(..., min_length=1)
+    prompt: str = Field(..., min_length=1)
+    image: object | None = None
+    images: list[object] | None = None
+    model: str = "gpt-image-2"
+
+
 class ImageTaskCancelRequest(BaseModel):
     ids: list[str] = Field(default_factory=list)
 
@@ -61,6 +69,11 @@ def _images_from_json_body(body: dict[str, Any]) -> list[tuple[bytes, str, str]]
         image_data, mime_type = decoded
         images.append((image_data, _image_filename(index, mime_type, source), mime_type))
     return images
+
+
+def _images_from_reverse_prompt_body(body: ReversePromptTaskRequest) -> list[tuple[bytes, str, str]]:
+    payload = body.model_dump(mode="python")
+    return _images_from_json_body(payload)
 
 
 async def _parse_edit_task_request(request: Request) -> tuple[dict[str, str | None], list[tuple[bytes, str, str]]]:
@@ -177,6 +190,35 @@ def create_router() -> APIRouter:
                 prompt=prompt,
                 model=model,
                 size=size,
+                base_url=resolve_image_base_url(request),
+                images=images,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
+
+    @router.post("/api/image-tasks/reverse-prompts")
+    async def create_reverse_prompt_task(
+        body: ReversePromptTaskRequest,
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ):
+        identity = require_identity(authorization)
+        prompt = str(body.prompt or "")
+        model = str(body.model or "gpt-image-2")
+        await filter_or_log(LoggedCall(identity, "/api/image-tasks/reverse-prompts", model, "反推提示词任务", request_text=prompt), prompt)
+        images = _images_from_reverse_prompt_body(body)
+        if not images:
+            raise HTTPException(
+                status_code=400,
+                detail={"error": "image file, data URL, base64 image, or http(s) image URL is required"},
+            )
+        try:
+            return await run_in_threadpool(
+                image_task_service.submit_reverse_prompt,
+                identity,
+                client_task_id=body.client_task_id,
+                prompt=prompt,
+                model=model,
                 base_url=resolve_image_base_url(request),
                 images=images,
             )

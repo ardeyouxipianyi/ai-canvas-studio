@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import itertools
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -19,6 +20,51 @@ from utils.helper import anthropic_sse_stream, sse_json_stream
 
 LOG_TYPE_CALL = "call"
 LOG_TYPE_ACCOUNT = "account"
+SENSITIVE_KEYWORDS = {
+    "access_token",
+    "refresh_token",
+    "id_token",
+    "api_key",
+    "authorization",
+    "cookie",
+    "password",
+    "secret",
+    "secret_key",
+    "auth-key",
+    "token",
+}
+SENSITIVE_ASSIGNMENT_RE = re.compile(
+    r"(?i)(\b(?:access_token|refresh_token|id_token|api_key|authorization|cookie|password|secret|secret_key|auth-key|token)\b\s*[:=]\s*[\"']?)([^\"'\s,}]+)"
+)
+BEARER_TOKEN_RE = re.compile(r"(?i)\bBearer\s+([A-Za-z0-9._~+/=-]{8,})")
+API_KEY_RE = re.compile(r"\bsk-[A-Za-z0-9_-]{8,}")
+
+
+def _is_sensitive_key(key: object) -> bool:
+    normalized = str(key or "").strip().lower().replace("-", "_")
+    return normalized in {item.replace("-", "_") for item in SENSITIVE_KEYWORDS} or normalized.endswith("_token")
+
+
+def _redact_sensitive_text(value: str) -> str:
+    text = BEARER_TOKEN_RE.sub("Bearer ***", value)
+    text = SENSITIVE_ASSIGNMENT_RE.sub(r"\1***", text)
+    text = API_KEY_RE.sub("sk-***", text)
+    return text
+
+
+def _sanitize_log_value(value: object) -> object:
+    if isinstance(value, dict):
+        return {
+            key: "***" if _is_sensitive_key(key) else _sanitize_log_value(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_sanitize_log_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [_sanitize_log_value(item) for item in value]
+    if isinstance(value, str):
+        return _redact_sensitive_text(value)
+    return value
 
 
 class LogService:
@@ -64,7 +110,7 @@ class LogService:
             "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "type": type,
             "summary": summary,
-            "detail": detail or data,
+            "detail": _sanitize_log_value(detail or data),
         }
         with self.path.open("a", encoding="utf-8") as file:
             file.write(self._serialize_item(item) + "\n")
@@ -127,8 +173,23 @@ def _collect_urls(value: object) -> list[str]:
     return urls
 
 
+def _count_image_outputs(result: object = None, urls: list[str] | None = None) -> int:
+    collected_urls = [*(urls or []), *_collect_urls(result)]
+    if collected_urls:
+        return len(dict.fromkeys(collected_urls))
+    if isinstance(result, dict):
+        data = result.get("data")
+        if isinstance(data, list):
+            return sum(
+                1
+                for item in data
+                if isinstance(item, dict) and (item.get("url") or item.get("b64_json"))
+            )
+    return 0
+
+
 def _request_excerpt(text: object, limit: int = 1000) -> str:
-    value = str(text or "").strip()
+    value = _redact_sensitive_text(str(text or "").strip())
     if not value:
         return ""
     normalized = " ".join(value.split())
@@ -235,6 +296,7 @@ class LoggedCall:
 
     def log(self, suffix: str, result: object = None, status: str = "success", error: str = "",
             urls: list[str] | None = None) -> None:
+        duration_ms = int((time.time() - self.started) * 1000)
         detail = {
             "key_id": self.identity.get("id"),
             "key_name": self.identity.get("name"),
@@ -243,7 +305,7 @@ class LoggedCall:
             "model": self.model,
             "started_at": datetime.fromtimestamp(self.started).strftime("%Y-%m-%d %H:%M:%S"),
             "ended_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "duration_ms": int((time.time() - self.started) * 1000),
+            "duration_ms": duration_ms,
             "status": status,
         }
         request_excerpt = _request_excerpt(self.request_text)
@@ -255,3 +317,15 @@ class LoggedCall:
         if collected_urls:
             detail["urls"] = list(dict.fromkeys(collected_urls))
         log_service.add(LOG_TYPE_CALL, f"{self.summary}{suffix}", detail)
+        try:
+            from services.auth_service import auth_service
+
+            auth_service.record_usage(
+                self.identity,
+                endpoint=self.endpoint,
+                status=status,
+                duration_ms=duration_ms,
+                generated_images=_count_image_outputs(result, urls),
+            )
+        except Exception:
+            pass

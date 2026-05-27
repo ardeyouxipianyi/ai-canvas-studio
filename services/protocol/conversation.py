@@ -103,11 +103,26 @@ def encode_images(images: Iterable[tuple[bytes, str, str]]) -> list[str]:
     return [base64.b64encode(data).decode("ascii") for data, _, _ in images if data]
 
 
-def save_image_bytes(image_data: bytes, base_url: str | None = None) -> str:
+def _safe_owner_segment(owner_id: str | None) -> str:
+    value = str(owner_id or "").strip()
+    if not value:
+        return ""
+    cleaned = re.sub(r"[^A-Za-z0-9_-]+", "_", value).strip("_")
+    if cleaned:
+        return cleaned[:80]
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:24]
+
+
+def save_image_bytes(image_data: bytes, base_url: str | None = None, owner_id: str | None = None) -> str:
     config.cleanup_old_images()
     file_hash = hashlib.md5(image_data).hexdigest()
     filename = f"{int(time.time())}_{file_hash}.png"
-    relative_dir = Path(time.strftime("%Y"), time.strftime("%m"), time.strftime("%d"))
+    owner_segment = _safe_owner_segment(owner_id)
+    relative_dir = (
+        Path("users", owner_segment, time.strftime("%Y"), time.strftime("%m"), time.strftime("%d"))
+        if owner_segment
+        else Path(time.strftime("%Y"), time.strftime("%m"), time.strftime("%d"))
+    )
     file_path = config.images_dir / relative_dir / filename
     file_path.parent.mkdir(parents=True, exist_ok=True)
     file_path.write_bytes(image_data)
@@ -226,6 +241,7 @@ def format_image_result(
     base_url: str | None = None,
     created: int | None = None,
     message: str = "",
+    owner_id: str | None = None,
 ) -> dict[str, Any]:
     data: list[dict[str, Any]] = []
     for item in items:
@@ -236,12 +252,12 @@ def format_image_result(
         if response_format == "b64_json":
             data.append({
                 "b64_json": b64_json,
-                "url": save_image_bytes(base64.b64decode(b64_json), base_url),
+                "url": save_image_bytes(base64.b64decode(b64_json), base_url, owner_id),
                 "revised_prompt": revised_prompt,
             })
         else:
             data.append({
-                "url": save_image_bytes(base64.b64decode(b64_json), base_url),
+                "url": save_image_bytes(base64.b64decode(b64_json), base_url, owner_id),
                 "revised_prompt": revised_prompt,
             })
     result: dict[str, Any] = {"created": created or int(time.time()), "data": data}
@@ -261,6 +277,7 @@ class ConversationRequest:
     response_format: str = "b64_json"
     base_url: str | None = None
     message_as_error: bool = False
+    owner_id: str | None = None
 
 
 @dataclass
@@ -639,6 +656,7 @@ def stream_image_outputs(
             request.response_format,
             request.base_url,
             int(time.time()),
+            owner_id=request.owner_id,
         )["data"]
         if data:
             yield ImageOutput(kind="result", model=request.model, index=index, total=total, data=data)

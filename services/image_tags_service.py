@@ -49,11 +49,13 @@ def remove_tags(image_rel: str) -> None:
         save_tags(data)
 
 
-def delete_tag(tag: str) -> int:
+def delete_tag(tag: str, paths: set[str] | None = None) -> int:
     """从所有图片中删除指定标签，返回受影响的图片数。"""
     data = load_tags()
     count = 0
     for rel in list(data):
+        if paths is not None and rel not in paths:
+            continue
         if tag in data[rel]:
             data[rel] = [t for t in data[rel] if t != tag]
             if not data[rel]:
@@ -64,11 +66,13 @@ def delete_tag(tag: str) -> int:
     return count
 
 
-def get_all_tags() -> list[str]:
+def get_all_tags(paths: set[str] | None = None) -> list[str]:
     data = load_tags()
     seen: set[str] = set()
     result: list[str] = []
-    for tags in data.values():
+    for rel, tags in data.items():
+        if paths is not None and rel not in paths:
+            continue
         for t in tags:
             if t not in seen:
                 seen.add(t)

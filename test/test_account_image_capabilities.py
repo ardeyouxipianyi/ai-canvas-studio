@@ -1,12 +1,37 @@
 from __future__ import annotations
 
 import os
+import sys
 import tempfile
 import time
+import types
 import unittest
+from datetime import datetime
 from pathlib import Path
 
 os.environ.setdefault("CHATGPT2API_AUTH_KEY", "test-auth")
+
+fastapi_stub = types.ModuleType("fastapi")
+
+
+class HTTPException(Exception):
+    pass
+
+
+fastapi_stub.HTTPException = HTTPException
+concurrency_stub = types.ModuleType("fastapi.concurrency")
+concurrency_stub.run_in_threadpool = lambda func, *args, **kwargs: func(*args, **kwargs)
+responses_stub = types.ModuleType("fastapi.responses")
+responses_stub.JSONResponse = object
+responses_stub.StreamingResponse = object
+helper_stub = types.ModuleType("utils.helper")
+helper_stub.anthropic_sse_stream = lambda items: items
+helper_stub.sse_json_stream = lambda items: items
+helper_stub.anonymize_token = lambda token: "token:" + str(abs(hash(token)))[:8]
+sys.modules.setdefault("fastapi", fastapi_stub)
+sys.modules.setdefault("fastapi.concurrency", concurrency_stub)
+sys.modules.setdefault("fastapi.responses", responses_stub)
+sys.modules.setdefault("utils.helper", helper_stub)
 
 from services.account_service import AccountService
 from services.auth_service import AuthService
@@ -80,6 +105,51 @@ class AccountCapabilityTests(unittest.TestCase):
                 tokens = service._list_ready_candidate_tokens()
 
             self.assertEqual(tokens, ["token-2"])
+
+    def test_image_token_selection_prefers_healthier_account(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            service = AccountService(JSONStorageBackend(Path(tmp_dir) / "accounts.json"))
+            service.add_accounts(["weak-token", "strong-token"])
+            service.update_account(
+                "weak-token",
+                {
+                    "status": "正常",
+                    "quota": 1,
+                    "success": 0,
+                    "fail": 8,
+                    "last_failed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                },
+            )
+            service.update_account(
+                "strong-token",
+                {
+                    "status": "正常",
+                    "quota": 5,
+                    "success": 10,
+                    "fail": 1,
+                    "last_failed_at": "",
+                },
+            )
+            service.fetch_remote_info = lambda token, _event="": service.get_account(token)  # type: ignore[method-assign]
+
+            selected = service.get_available_access_token()
+
+            self.assertEqual(selected, "strong-token")
+            self.assertEqual(service._image_inflight.get("strong-token"), 1)
+            self.assertTrue(service.get_account("strong-token")["last_selected_at"])
+
+    def test_failed_image_result_records_failure_reason_for_scoring(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            service = AccountService(JSONStorageBackend(Path(tmp_dir) / "accounts.json"))
+            service.add_accounts(["token-1"])
+            service.update_account("token-1", {"status": "正常", "quota": 2})
+
+            updated = service.mark_image_result("token-1", success=False)
+
+            self.assertIsNotNone(updated)
+            self.assertEqual(updated["fail"], 1)
+            self.assertTrue(updated["last_failed_at"])
+            self.assertEqual(updated["last_failure_reason"], "image_generation_failed")
 
     def test_refresh_job_reports_progress_and_items(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

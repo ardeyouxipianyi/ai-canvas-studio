@@ -4,7 +4,6 @@ import os
 from pathlib import Path
 
 from services.storage.base import StorageBackend
-from services.storage.database_storage import DatabaseStorageBackend
 from services.storage.json_storage import JSONStorageBackend
 
 
@@ -32,6 +31,8 @@ def create_storage_backend(data_dir: Path) -> StorageBackend:
         return JSONStorageBackend(file_path, auth_keys_path)
     
     elif backend_type in ("sqlite", "postgres", "postgresql", "mysql", "database"):
+        from services.storage.database_storage import DatabaseStorageBackend
+
         # 数据库存储
         database_url = os.getenv("DATABASE_URL", "").strip()
         

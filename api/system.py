@@ -13,7 +13,14 @@ from api.support import require_admin, require_identity, resolve_image_base_url
 from services.auth_service import auth_service
 from services.backup_service import BackupError, backup_service
 from services.config import config
-from services.image_service import delete_images, download_images_zip, get_image_download_response, get_thumbnail_response, list_images
+from services.image_service import (
+    delete_images,
+    download_images_zip,
+    get_image_download_response,
+    get_thumbnail_response,
+    image_path_is_accessible,
+    list_images,
+)
 from services.image_tags_service import delete_tag, get_all_tags, set_tags
 from services.log_service import log_service
 from services.proxy_service import test_proxy
@@ -33,6 +40,10 @@ class ReversePromptInstructionRequest(BaseModel):
 
 class AdminPasswordUpdateRequest(BaseModel):
     current_key: str = ""
+    new_key: str = ""
+
+
+class AdminSetupRequest(BaseModel):
     new_key: str = ""
 
 
@@ -57,6 +68,14 @@ class BackupDeleteRequest(BaseModel):
 
 class DataTransferRequest(BaseModel):
     include: dict[str, bool] = {}
+    include_sensitive: bool = False
+
+
+def _accessible_image_paths(identity: dict[str, object]) -> set[str] | None:
+    if identity.get("role") == "admin":
+        return None
+    data = list_images("", identity=identity)
+    return {str(item.get("path") or "") for item in data.get("items", []) if item.get("path")}
 
 
 def create_router(app_version: str) -> APIRouter:
@@ -71,6 +90,31 @@ def create_router(app_version: str) -> APIRouter:
             "role": identity.get("role"),
             "subject_id": identity.get("id"),
             "name": identity.get("name"),
+        }
+
+    @router.get("/auth/setup-status")
+    async def get_setup_status():
+        return {
+            "setup_required": config.setup_required,
+            "admin_auth_key_editable": config.admin_auth_key_editable,
+            "version": app_version,
+        }
+
+    @router.post("/auth/setup")
+    async def initialize_admin_password(body: AdminSetupRequest):
+        new_key = str(body.new_key or "").strip()
+        if auth_service.raw_key_exists(new_key):
+            raise HTTPException(status_code=400, detail={"error": "管理员密码不能和已有用户密钥相同"})
+        try:
+            config.initialize_admin_auth_key(new_key)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
+        return {
+            "ok": True,
+            "version": app_version,
+            "role": "admin",
+            "subject_id": "admin",
+            "name": "管理员",
         }
 
     @router.get("/version")
@@ -118,8 +162,8 @@ def create_router(app_version: str) -> APIRouter:
 
     @router.get("/api/images")
     async def get_images(request: Request, start_date: str = "", end_date: str = "", authorization: str | None = Header(default=None)):
-        require_admin(authorization)
-        return list_images(resolve_image_base_url(request), start_date=start_date.strip(), end_date=end_date.strip())
+        identity = require_identity(authorization)
+        return list_images(resolve_image_base_url(request), start_date=start_date.strip(), end_date=end_date.strip(), identity=identity)
 
     @router.get("/image-thumbnails/{image_path:path}", include_in_schema=False)
     async def get_image_thumbnail(image_path: str):
@@ -127,13 +171,19 @@ def create_router(app_version: str) -> APIRouter:
 
     @router.post("/api/images/delete")
     async def delete_images_endpoint(body: ImageDeleteRequest, authorization: str | None = Header(default=None)):
-        require_admin(authorization)
-        return delete_images(body.paths, start_date=body.start_date.strip(), end_date=body.end_date.strip(), all_matching=body.all_matching)
+        identity = require_identity(authorization)
+        return delete_images(
+            body.paths,
+            start_date=body.start_date.strip(),
+            end_date=body.end_date.strip(),
+            all_matching=body.all_matching,
+            identity=identity,
+        )
 
     @router.post("/api/images/download")
     async def download_images_endpoint(body: ImageDownloadRequest, authorization: str | None = Header(default=None)):
-        require_admin(authorization)
-        buf = download_images_zip(body.paths)
+        identity = require_identity(authorization)
+        buf = download_images_zip(body.paths, identity)
         return StreamingResponse(
             buf,
             media_type="application/zip",
@@ -142,8 +192,8 @@ def create_router(app_version: str) -> APIRouter:
 
     @router.get("/api/images/download/{image_path:path}")
     async def download_single_image_endpoint(image_path: str, authorization: str | None = Header(default=None)):
-        require_admin(authorization)
-        return get_image_download_response(image_path)
+        identity = require_identity(authorization)
+        return get_image_download_response(image_path, identity)
 
     @router.get("/api/logs")
     @router.get("/api/logs/", include_in_schema=False)
@@ -215,7 +265,7 @@ def create_router(app_version: str) -> APIRouter:
     async def export_data_endpoint(body: DataTransferRequest, authorization: str | None = Header(default=None)):
         require_admin(authorization)
         try:
-            item = await run_in_threadpool(backup_service.export_data, body.include)
+            item = await run_in_threadpool(backup_service.export_data, body.include, body.include_sensitive)
         except BackupError as exc:
             raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
         filename = str(item.get("name") or "chatgpt2api-data.tar.gz")
@@ -284,22 +334,24 @@ def create_router(app_version: str) -> APIRouter:
 
     @router.get("/api/images/tags")
     async def list_image_tags(authorization: str | None = Header(default=None)):
-        require_admin(authorization)
-        return {"tags": get_all_tags()}
+        identity = require_identity(authorization)
+        return {"tags": get_all_tags(_accessible_image_paths(identity))}
 
     @router.post("/api/images/tags")
     async def update_image_tags(body: ImageTagsRequest, authorization: str | None = Header(default=None)):
-        require_admin(authorization)
+        identity = require_identity(authorization)
         rel = body.path.strip().lstrip("/")
         if not rel:
             raise HTTPException(status_code=400, detail={"error": "path is required"})
+        if not image_path_is_accessible(rel, identity):
+            raise HTTPException(status_code=404, detail={"error": "image not found"})
         tags = set_tags(rel, body.tags)
         return {"ok": True, "tags": tags}
 
     @router.delete("/api/images/tags/{tag}")
     async def delete_image_tag(tag: str, authorization: str | None = Header(default=None)):
-        require_admin(authorization)
-        count = delete_tag(tag)
+        identity = require_identity(authorization)
+        count = delete_tag(tag, _accessible_image_paths(identity))
         return {"ok": True, "removed_from": count}
 
     return router

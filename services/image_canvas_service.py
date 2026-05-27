@@ -26,6 +26,10 @@ def _number(value: object, fallback: float) -> float:
     return number if number == number and number not in {float("inf"), float("-inf")} else fallback
 
 
+def _progress(value: object, fallback: int = 0) -> int:
+    return max(0, min(100, int(_number(value, fallback))))
+
+
 def _owner_id(identity: dict[str, object]) -> str:
     return _clean(identity.get("id")) or "anonymous"
 
@@ -57,10 +61,12 @@ def _normalize_node(raw: object) -> dict[str, object] | None:
         "size": _clean(raw.get("size")),
         "count": max(1, int(_number(raw.get("count"), 1))),
         "status": status,
+        "progress": _progress(raw.get("progress"), 100 if status in {"success", "error", "cancelled"} else 0),
+        "favorite": bool(raw.get("favorite")),
         "createdAt": _clean(raw.get("createdAt"), now),
         "updatedAt": _clean(raw.get("updatedAt"), _clean(raw.get("createdAt"), now)),
     }
-    for key in ("prompt", "sourceNodeId", "taskId", "b64_json", "url", "revised_prompt", "error"):
+    for key in ("prompt", "sourceNodeId", "taskId", "b64_json", "url", "revised_prompt", "error", "progressMessage"):
         value = raw.get(key)
         if isinstance(value, str):
             node[key] = value

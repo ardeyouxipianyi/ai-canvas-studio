@@ -192,6 +192,7 @@ def create_router() -> APIRouter:
         identity = require_identity(authorization)
         payload = body.model_dump(mode="python")
         payload["base_url"] = resolve_image_base_url(request)
+        payload["owner_id"] = identity.get("id")
         call = LoggedCall(identity, "/v1/images/generations", body.model, "文生图", request_text=body.prompt)
         await filter_or_log(call, body.prompt)
         return await call.run(openai_v1_image_generations.handle, payload)
@@ -224,6 +225,7 @@ def create_router() -> APIRouter:
             "stream": parsed["stream"],
             "message_as_error": parsed["message_as_error"],
             "base_url": resolve_image_base_url(request),
+            "owner_id": identity.get("id"),
         }
         return await call.run(openai_v1_image_edit.handle, payload)
 

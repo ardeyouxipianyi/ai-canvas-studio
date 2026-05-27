@@ -44,6 +44,14 @@ def _clean(value: object, default: str = "") -> str:
     return str(value or default).strip()
 
 
+def _progress(value: object, fallback: int = 0) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        number = fallback
+    return max(0, min(100, number))
+
+
 def _owner_id(identity: dict[str, object]) -> str:
     return _clean(identity.get("id")) or "anonymous"
 
@@ -69,6 +77,8 @@ def _public_task(task: dict[str, Any]) -> dict[str, Any]:
         "mode": task.get("mode"),
         "model": task.get("model"),
         "size": task.get("size"),
+        "progress": _progress(task.get("progress")),
+        "progress_message": _clean(task.get("progress_message")),
         "created_at": task.get("created_at"),
         "updated_at": task.get("updated_at"),
     }
@@ -76,6 +86,8 @@ def _public_task(task: dict[str, Any]) -> dict[str, Any]:
         item["data"] = task.get("data")
     if task.get("error"):
         item["error"] = task.get("error")
+    if task.get("message"):
+        item["message"] = task.get("message")
     return item
 
 
@@ -119,6 +131,7 @@ class ImageTaskService:
             "size": size,
             "response_format": "url",
             "base_url": base_url,
+            "owner_id": _owner_id(identity),
         }
         return self._submit(identity, client_task_id=client_task_id, mode="generate", payload=payload)
 
@@ -141,8 +154,32 @@ class ImageTaskService:
             "size": size,
             "response_format": "url",
             "base_url": base_url,
+            "owner_id": _owner_id(identity),
         }
         return self._submit(identity, client_task_id=client_task_id, mode="edit", payload=payload)
+
+    def submit_reverse_prompt(
+        self,
+        identity: dict[str, object],
+        *,
+        client_task_id: str,
+        prompt: str,
+        model: str,
+        base_url: str,
+        images: list[tuple[bytes, str, str]],
+    ) -> dict[str, Any]:
+        payload = {
+            "prompt": prompt,
+            "images": images,
+            "model": model,
+            "n": 1,
+            "size": None,
+            "response_format": "url",
+            "message_as_error": False,
+            "base_url": base_url,
+            "owner_id": _owner_id(identity),
+        }
+        return self._submit(identity, client_task_id=client_task_id, mode="reverse_prompt", payload=payload)
 
     def list_tasks(self, identity: dict[str, object], task_ids: list[str]) -> dict[str, Any]:
         owner = _owner_id(identity)
@@ -187,6 +224,8 @@ class ImageTaskService:
                 task["status"] = TASK_STATUS_CANCELLED
                 task["error"] = "任务已取消"
                 task["data"] = []
+                task["progress"] = 100
+                task["progress_message"] = "已取消"
                 task["updated_at"] = now
                 cancelled.append(_public_task(task))
             if cancelled:
@@ -222,6 +261,8 @@ class ImageTaskService:
                 "mode": mode,
                 "model": _clean(payload.get("model"), "gpt-image-2"),
                 "size": _clean(payload.get("size")),
+                "progress": 0,
+                "progress_message": "排队中",
                 "created_at": now,
                 "updated_at": now,
             }
@@ -248,21 +289,39 @@ class ImageTaskService:
         model: str,
     ) -> None:
         started = time.time()
-        self._update_task(key, status=TASK_STATUS_RUNNING, error="")
+        self._update_task(key, status=TASK_STATUS_RUNNING, error="", progress=15, progress_message="正在调用上游")
         try:
             if self._is_cancelled(key):
                 return
-            handler = self.edit_handler if mode == "edit" else self.generation_handler
+            handler = self.edit_handler if mode in {"edit", "reverse_prompt"} else self.generation_handler
             result = handler(payload)
             if self._is_cancelled(key):
                 return
             if not isinstance(result, dict):
                 raise RuntimeError("image task returned streaming result unexpectedly")
+            self._update_task(key, progress=85, progress_message="正在整理结果")
             data = result.get("data")
+            message = _clean(result.get("message"))
+            if mode == "reverse_prompt":
+                if not message and isinstance(data, list) and data and isinstance(data[0], dict):
+                    message = _clean(data[0].get("revised_prompt"))
+                if not message:
+                    raise RuntimeError("reverse prompt task returned no text")
+                self._update_task(key, status=TASK_STATUS_SUCCESS, data=[], message=message, error="", progress=100, progress_message="已完成")
+                self._log_call(
+                    identity,
+                    mode,
+                    model,
+                    started,
+                    "调用完成",
+                    request_preview=request_text(payload.get("prompt")),
+                    urls=[],
+                )
+                return
             if not isinstance(data, list) or not data:
                 message = _clean(result.get("message")) or "image task returned no image data"
                 raise RuntimeError(message)
-            self._update_task(key, status=TASK_STATUS_SUCCESS, data=data, error="")
+            self._update_task(key, status=TASK_STATUS_SUCCESS, data=data, error="", progress=100, progress_message="已完成")
             self._log_call(
                 identity,
                 mode,
@@ -276,7 +335,7 @@ class ImageTaskService:
             if self._is_cancelled(key):
                 return
             error_message = str(exc) or "image task failed"
-            self._update_task(key, status=TASK_STATUS_ERROR, error=error_message, data=[])
+            self._update_task(key, status=TASK_STATUS_ERROR, error=error_message, data=[], message="", progress=100, progress_message="失败")
             self._log_call(
                 identity,
                 mode,
@@ -301,8 +360,8 @@ class ImageTaskService:
         error: str = "",
         urls: list[str] | None = None,
     ) -> None:
-        endpoint = "/v1/images/edits" if mode == "edit" else "/v1/images/generations"
-        summary_prefix = "图生图" if mode == "edit" else "文生图"
+        endpoint = "/api/image-tasks/reverse-prompts" if mode == "reverse_prompt" else "/v1/images/edits" if mode == "edit" else "/v1/images/generations"
+        summary_prefix = "反推提示词" if mode == "reverse_prompt" else "图生图" if mode == "edit" else "文生图"
         detail = {
             "key_id": identity.get("id"),
             "key_name": identity.get("name"),
@@ -322,6 +381,18 @@ class ImageTaskService:
             detail["urls"] = list(dict.fromkeys(urls))
         try:
             log_service.add(LOG_TYPE_CALL, f"{summary_prefix}{suffix}", detail)
+        except Exception:
+            pass
+        try:
+            from services.auth_service import auth_service
+
+            auth_service.record_usage(
+                identity,
+                endpoint=endpoint,
+                status=status,
+                duration_ms=int(detail["duration_ms"]),
+                generated_images=len(list(dict.fromkeys(urls or []))),
+            )
         except Exception:
             pass
 
@@ -362,13 +433,17 @@ class ImageTaskService:
             status = _clean(item.get("status"))
             if status not in {TASK_STATUS_QUEUED, TASK_STATUS_RUNNING, TASK_STATUS_SUCCESS, TASK_STATUS_ERROR, TASK_STATUS_CANCELLED}:
                 status = TASK_STATUS_ERROR
+            raw_mode = _clean(item.get("mode"))
+            mode = raw_mode if raw_mode in {"generate", "edit", "reverse_prompt"} else "generate"
             task = {
                 "id": task_id,
                 "owner_id": owner,
                 "status": status,
-                "mode": "edit" if item.get("mode") == "edit" else "generate",
+                "mode": mode,
                 "model": _clean(item.get("model"), "gpt-image-2"),
                 "size": _clean(item.get("size")),
+                "progress": _progress(item.get("progress"), 100 if status in TERMINAL_STATUSES else 0),
+                "progress_message": _clean(item.get("progress_message")),
                 "created_at": _clean(item.get("created_at"), _now_iso()),
                 "updated_at": _clean(item.get("updated_at"), _clean(item.get("created_at"), _now_iso())),
             }
@@ -378,6 +453,9 @@ class ImageTaskService:
             error = _clean(item.get("error"))
             if error:
                 task["error"] = error
+            message = _clean(item.get("message"))
+            if message:
+                task["message"] = message
             tasks[_task_key(owner, task_id)] = task
         return tasks
 
@@ -393,6 +471,8 @@ class ImageTaskService:
             if task.get("status") in UNFINISHED_STATUSES:
                 task["status"] = TASK_STATUS_ERROR
                 task["error"] = "服务已重启，未完成的图片任务已中断"
+                task["progress"] = 100
+                task["progress_message"] = "失败"
                 task["updated_at"] = _now_iso()
                 changed = True
         return changed

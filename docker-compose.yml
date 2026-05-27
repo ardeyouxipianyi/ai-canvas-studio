@@ -10,7 +10,8 @@ services:
       - "3000:80"
     volumes:
       - ./data:/app/data
-      - ./config.json:/app/config.json
+      # config.json is only used as the first-run seed. Runtime changes are saved in ./data/config.json.
+      - ./config.json:/app/config.seed.json:ro
     environment:
       # 存储后端配置 (可选值: json, sqlite, postgres, git)
        - STORAGE_BACKEND=json

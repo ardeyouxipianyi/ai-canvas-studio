@@ -49,8 +49,13 @@ request.interceptors.response.use(
     (response) => response,
     async (error: AxiosError<ErrorPayload>) => {
         const status = error.response?.status;
+        const payload = error.response?.data;
         const shouldRedirect = (error.config as RequestConfig | undefined)?.redirectOnUnauthorized !== false;
-        if (status === 401 && shouldRedirect && typeof window !== "undefined") {
+        const needsSetup =
+            status === 423 &&
+            typeof payload?.detail === "object" &&
+            Boolean((payload.detail as { setup_required?: boolean }).setup_required);
+        if ((status === 401 || needsSetup) && shouldRedirect && typeof window !== "undefined") {
             // Avoid redirect loop — only redirect if not already on /login
             if (!window.location.pathname.startsWith("/login")) {
                 await clearStoredAuthSession();
@@ -61,7 +66,6 @@ request.interceptors.response.use(
             }
         }
 
-        const payload = error.response?.data;
         const message =
             errorMessageFromValue(payload?.detail) ||
             errorMessageFromValue(payload?.error) ||

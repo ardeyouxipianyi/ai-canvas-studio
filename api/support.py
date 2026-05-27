@@ -21,13 +21,14 @@ def extract_bearer_token(authorization: str | None) -> str:
 
 
 def _legacy_admin_identity(token: str) -> dict[str, object] | None:
-    auth_key = str(config.auth_key or "").strip()
-    if auth_key and token == auth_key:
+    if config.verify_admin_auth_key(token):
         return {"id": "admin", "name": "管理员", "role": "admin"}
     return None
 
 
 def require_identity(authorization: str | None) -> dict[str, object]:
+    if config.setup_required:
+        raise HTTPException(status_code=423, detail={"error": "需要先设置管理员密码", "setup_required": True})
     token = extract_bearer_token(authorization)
     identity = _legacy_admin_identity(token) or auth_service.authenticate(token)
     if identity is None:

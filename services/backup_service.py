@@ -6,6 +6,7 @@ import io
 import json
 import os
 import random
+import re
 import subprocess
 import tarfile
 import threading
@@ -125,6 +126,141 @@ def _json_object_from_bytes(value: bytes) -> object:
         return json.loads(value.decode("utf-8"))
     except Exception as exc:
         raise BackupError("导入包内 JSON 数据无法解析") from exc
+
+
+REDACTED_VALUE = "[REDACTED]"
+SENSITIVE_ASSIGNMENT_RE = re.compile(
+    r"(?i)(\b(?:access_token|refresh_token|id_token|api_key|authorization|cookie|password|secret|secret_key|auth-key|token)\b\s*[:=]\s*[\"']?)([^\"'\s,}]+)"
+)
+BEARER_TOKEN_RE = re.compile(r"(?i)\bBearer\s+([A-Za-z0-9._~+/=-]{8,})")
+API_KEY_RE = re.compile(r"\bsk-[A-Za-z0-9_-]{8,}")
+
+
+def _redact_sensitive_text(value: str) -> str:
+    text = BEARER_TOKEN_RE.sub("Bearer ***", value)
+    text = SENSITIVE_ASSIGNMENT_RE.sub(r"\1***", text)
+    text = API_KEY_RE.sub("sk-***", text)
+    return text
+
+
+def _normalize_sensitive_key(key: object) -> str:
+    return str(key or "").strip().lower().replace("_", "-")
+
+
+def _is_sensitive_key(key: object) -> bool:
+    normalized = _normalize_sensitive_key(key)
+    if not normalized:
+        return False
+    exact_keys = {
+        "access-token",
+        "refresh-token",
+        "id-token",
+        "token",
+        "auth-key",
+        "auth-key-hash",
+        "key-hash",
+        "api-key",
+        "secret-key",
+        "secret-access-key",
+        "passphrase",
+        "password",
+        "authorization",
+        "cookie",
+    }
+    if normalized in exact_keys:
+        return True
+    return any(
+        marker in normalized
+        for marker in (
+            "access-token",
+            "refresh-token",
+            "id-token",
+            "auth-key",
+            "key-hash",
+            "api-key",
+            "secret",
+            "passphrase",
+            "password",
+            "authorization",
+            "cookie",
+        )
+    )
+
+
+def _redact_sensitive_data(value: object, *, parent_key: object = "") -> object:
+    if _is_sensitive_key(parent_key):
+        if value in ("", None, [], {}):
+            return value
+        return REDACTED_VALUE
+    if isinstance(value, dict):
+        return {str(key): _redact_sensitive_data(item, parent_key=key) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_redact_sensitive_data(item, parent_key=parent_key) for item in value]
+    if isinstance(value, str):
+        return _redact_sensitive_text(value)
+    return value
+
+
+def _read_json_file(path: Path) -> object | None:
+    if not path.exists() or not path.is_file():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return None
+
+
+def _redact_json_file_bytes(path: Path) -> bytes | None:
+    parsed = _read_json_file(path)
+    if parsed is None:
+        return None
+    return _json_bytes(_redact_sensitive_data(parsed))
+
+
+def _redact_jsonl_file_bytes(path: Path) -> bytes | None:
+    if not path.exists() or not path.is_file():
+        return None
+    lines: list[str] = []
+    for line in path.read_text(encoding="utf-8-sig", errors="replace").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            parsed = json.loads(stripped)
+            lines.append(json.dumps(_redact_sensitive_data(parsed), ensure_ascii=False, separators=(",", ":")))
+        except Exception:
+            lines.append(stripped)
+    return ("\n".join(lines) + ("\n" if lines else "")).encode("utf-8")
+
+
+def _merge_redacted_config(current: object, incoming: object) -> dict[str, object]:
+    current_map = current if isinstance(current, dict) else {}
+    incoming_map = incoming if isinstance(incoming, dict) else {}
+
+    def merge(current_value: object, incoming_value: object, *, key: object = "") -> object:
+        if incoming_value == REDACTED_VALUE or _is_sensitive_key(key):
+            return current_value
+        if isinstance(current_value, dict) and isinstance(incoming_value, dict):
+            merged = dict(current_value)
+            for child_key, child_value in incoming_value.items():
+                merged[str(child_key)] = merge(merged.get(str(child_key)), child_value, key=child_key)
+            return merged
+        if isinstance(incoming_value, dict):
+            return {
+                str(child_key): merge(None, child_value, key=child_key)
+                for child_key, child_value in incoming_value.items()
+                if child_value != REDACTED_VALUE and not _is_sensitive_key(child_key)
+            }
+        if isinstance(incoming_value, list):
+            return _redact_sensitive_data(incoming_value, parent_key=key)
+        return incoming_value
+
+    merged_config = dict(current_map)
+    for item_key, item_value in incoming_map.items():
+        if item_value == REDACTED_VALUE or _is_sensitive_key(item_key):
+            continue
+        merged_config[str(item_key)] = merge(merged_config.get(str(item_key)), item_value, key=item_key)
+    return merged_config
 
 
 def _normalize_transfer_include(value: object) -> dict[str, bool]:
@@ -474,9 +610,12 @@ class BackupService:
             "size": len(payload),
         }
 
-    def export_data(self, include: dict[str, object]) -> dict[str, object]:
+    def export_data(self, include: dict[str, object], include_sensitive: bool = False) -> dict[str, object]:
         normalized_include = _normalize_transfer_include(include)
-        payload = self._build_backup_archive({"include": normalized_include}, trigger="manual-export")
+        payload = self._build_backup_archive(
+            {"include": normalized_include, "include_sensitive": bool(include_sensitive)},
+            trigger="manual-export",
+        )
         timestamp = _utc_now().strftime("%Y%m%dT%H%M%SZ")
         name = f"chatgpt2api-data-{timestamp}.tar.gz"
         return {
@@ -493,6 +632,16 @@ class BackupService:
             raise BackupError("当前手动导入不支持加密备份包，请先解密后再导入")
         selected = _normalize_transfer_include(include)
         members = self._read_archive_members(payload)
+        metadata: dict[str, object] = {}
+        metadata_raw = members.get("backup-metadata.json")
+        if metadata_raw is not None:
+            try:
+                parsed_metadata = json.loads(metadata_raw.decode("utf-8"))
+                if isinstance(parsed_metadata, dict):
+                    metadata = parsed_metadata
+            except Exception:
+                metadata = {}
+        archive_redacted = metadata.get("redacted") is True or metadata.get("sensitive_included") is False
         summary: dict[str, object] = {"imported": [], "skipped": [], "counts": {}}
 
         def mark(name: str, count: int = 1) -> None:
@@ -513,7 +662,12 @@ class BackupService:
             if raw is None:
                 skip("config")
             else:
-                CONFIG_FILE.write_bytes(raw)
+                if archive_redacted:
+                    parsed = _json_object_from_bytes(raw)
+                    merged = _merge_redacted_config(_read_json_file(CONFIG_FILE), parsed)
+                    CONFIG_FILE.write_bytes(_json_bytes(merged) + b"\n")
+                else:
+                    CONFIG_FILE.write_bytes(raw)
                 config.data = config._load()
                 mark("config")
 
@@ -528,6 +682,9 @@ class BackupService:
         }
         for key, (target, archive_name) in file_targets.items():
             if not selected.get(key):
+                continue
+            if archive_redacted and key in {"register", "cpa", "sub2api"}:
+                skip(key)
                 continue
             raw = members.get(archive_name)
             if raw is None:
@@ -544,6 +701,8 @@ class BackupService:
             raw = members.get("snapshots/accounts.json")
             if raw is None:
                 skip("accounts_snapshot")
+            elif archive_redacted:
+                skip("accounts_snapshot")
             else:
                 parsed = _json_object_from_bytes(raw)
                 if not isinstance(parsed, list):
@@ -554,6 +713,8 @@ class BackupService:
         if selected.get("auth_keys_snapshot"):
             raw = members.get("snapshots/auth_keys.json")
             if raw is None:
+                skip("auth_keys_snapshot")
+            elif archive_redacted:
                 skip("auth_keys_snapshot")
             else:
                 parsed = _json_object_from_bytes(raw)
@@ -765,52 +926,78 @@ class BackupService:
             "trigger": metadata.get("trigger"),
             "app_version": metadata.get("app_version"),
             "storage_backend": metadata.get("storage_backend"),
+            "sensitive_included": metadata.get("sensitive_included"),
+            "redacted": metadata.get("redacted"),
             "files": files,
             "snapshots": snapshots,
         }
 
     def _build_backup_archive(self, settings: dict[str, object], *, trigger: str) -> bytes:
         include = settings.get("include") if isinstance(settings.get("include"), dict) else {}
+        include_sensitive = bool(settings.get("include_sensitive"))
+        if trigger != "manual-export":
+            include_sensitive = bool(settings.get("encrypt")) and bool(_clean(settings.get("passphrase")))
         metadata = {
             "version": 2,
             "created_at": _iso_now(),
             "trigger": trigger,
             "app_version": config.app_version,
             "storage_backend": config.get_storage_backend().get_backend_info(),
+            "sensitive_included": include_sensitive,
+            "redacted": not include_sensitive,
         }
+
+        def add_json_or_raw(archive: tarfile.TarFile, source: Path, arcname: str) -> None:
+            if include_sensitive:
+                self._add_file_to_archive(archive, source, arcname)
+                return
+            payload = _redact_json_file_bytes(source)
+            if payload is not None:
+                self._add_bytes_to_archive(archive, arcname, payload)
+
+        def add_jsonl_or_raw(archive: tarfile.TarFile, source: Path, arcname: str) -> None:
+            if include_sensitive:
+                self._add_file_to_archive(archive, source, arcname)
+                return
+            payload = _redact_jsonl_file_bytes(source)
+            if payload is not None:
+                self._add_bytes_to_archive(archive, arcname, payload)
+
         buffer = io.BytesIO()
         with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
             self._add_bytes_to_archive(archive, "backup-metadata.json", _json_bytes(metadata))
             if include.get("config"):
-                self._add_file_to_archive(archive, CONFIG_FILE, "config.json")
+                add_json_or_raw(archive, CONFIG_FILE, "config.json")
             if include.get("register"):
-                self._add_file_to_archive(archive, DATA_DIR / "register.json", "data/register.json")
+                add_json_or_raw(archive, DATA_DIR / "register.json", "data/register.json")
             if include.get("cpa"):
-                self._add_file_to_archive(archive, DATA_DIR / "cpa_config.json", "data/cpa_config.json")
+                add_json_or_raw(archive, DATA_DIR / "cpa_config.json", "data/cpa_config.json")
             if include.get("sub2api"):
-                self._add_file_to_archive(archive, DATA_DIR / "sub2api_config.json", "data/sub2api_config.json")
+                add_json_or_raw(archive, DATA_DIR / "sub2api_config.json", "data/sub2api_config.json")
             if include.get("logs"):
-                self._add_file_to_archive(archive, DATA_DIR / "logs.jsonl", "data/logs.jsonl")
+                add_jsonl_or_raw(archive, DATA_DIR / "logs.jsonl", "data/logs.jsonl")
             if include.get("image_tasks"):
-                self._add_file_to_archive(archive, DATA_DIR / "image_tasks.json", "data/image_tasks.json")
+                add_json_or_raw(archive, DATA_DIR / "image_tasks.json", "data/image_tasks.json")
             if include.get("image_conversations"):
-                self._add_file_to_archive(archive, DATA_DIR / "image_conversations.json", "data/image_conversations.json")
+                add_json_or_raw(archive, DATA_DIR / "image_conversations.json", "data/image_conversations.json")
             if include.get("image_canvas"):
-                self._add_file_to_archive(archive, DATA_DIR / "image_canvas_projects.json", "data/image_canvas_projects.json")
+                add_json_or_raw(archive, DATA_DIR / "image_canvas_projects.json", "data/image_canvas_projects.json")
             if include.get("accounts_snapshot"):
+                accounts = config.get_storage_backend().load_accounts()
                 self._add_bytes_to_archive(
                     archive,
                     "snapshots/accounts.json",
-                    _json_bytes(config.get_storage_backend().load_accounts()),
+                    _json_bytes(accounts if include_sensitive else _redact_sensitive_data(accounts)),
                 )
             if include.get("auth_keys_snapshot"):
+                auth_keys = config.get_storage_backend().load_auth_keys()
                 self._add_bytes_to_archive(
                     archive,
                     "snapshots/auth_keys.json",
-                    _json_bytes(config.get_storage_backend().load_auth_keys()),
+                    _json_bytes(auth_keys if include_sensitive else _redact_sensitive_data(auth_keys)),
                 )
             if include.get("images"):
-                self._add_file_to_archive(archive, TAGS_FILE, "data/image_tags.json")
+                add_json_or_raw(archive, TAGS_FILE, "data/image_tags.json")
                 self._add_directory_to_archive(archive, config.images_dir, "data/images")
         return buffer.getvalue()
 

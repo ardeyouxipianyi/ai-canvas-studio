@@ -5,6 +5,7 @@ cd /d "%~dp0"
 
 set "ROOT=%~dp0"
 set "APP_DIR=%ROOT%app"
+set "DATA_DIR=%APP_DIR%\data"
 set "PYTHON_EXE=%ROOT%runtime\python\python.exe"
 set "LOG_DIR=%ROOT%logs"
 set "LOG_FILE=%LOG_DIR%\server.log"
@@ -25,18 +26,7 @@ if not exist "%APP_DIR%\main.py" (
   exit /b 1
 )
 
-if not exist "%APP_DIR%\config.json" (
-  if exist "%APP_DIR%\config.example.json" (
-    copy "%APP_DIR%\config.example.json" "%APP_DIR%\config.json" >nul
-  )
-)
-
-if not exist "%APP_DIR%\config.json" (
-  echo [chatgpt2api] Missing app\config.json
-  echo Please check app\config.example.json.
-  pause
-  exit /b 1
-)
+if not exist "%DATA_DIR%" mkdir "%DATA_DIR%"
 
 if not exist "%LOG_DIR%" mkdir "%LOG_DIR%"
 

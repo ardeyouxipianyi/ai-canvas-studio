@@ -35,6 +35,21 @@ function formatDateTime(value?: string | null) {
   }).format(date);
 }
 
+function usageNumber(item: UserKey, key: keyof NonNullable<UserKey["usage"]>) {
+  const value = Number(item.usage?.[key] || 0);
+  return Number.isFinite(value) ? Math.max(0, value) : 0;
+}
+
+function formatAverageDuration(item: UserKey) {
+  const totalCalls = usageNumber(item, "total_calls");
+  const totalDuration = usageNumber(item, "total_duration_ms");
+  if (!totalCalls || !totalDuration) {
+    return "—";
+  }
+  const seconds = totalDuration / totalCalls / 1000;
+  return seconds >= 10 ? `${seconds.toFixed(0)} 秒` : `${seconds.toFixed(1)} 秒`;
+}
+
 export function UserKeysCard() {
   const didLoadRef = useRef(false);
   const [items, setItems] = useState<UserKey[]>([]);
@@ -233,6 +248,15 @@ export function UserKeysCard() {
                       <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-stone-500">
                         <span>创建时间 {formatDateTime(item.created_at)}</span>
                         <span>最近使用 {formatDateTime(item.last_used_at)}</span>
+                        <span>最近调用 {formatDateTime(item.usage?.last_call_at)}</span>
+                      </div>
+                      <div className="flex flex-wrap gap-2 text-xs text-stone-600">
+                        <span className="rounded-md bg-stone-100 px-2 py-1">总调用 {usageNumber(item, "total_calls")}</span>
+                        <span className="rounded-md bg-emerald-50 px-2 py-1 text-emerald-700">成功 {usageNumber(item, "successful_calls")}</span>
+                        <span className="rounded-md bg-rose-50 px-2 py-1 text-rose-700">失败 {usageNumber(item, "failed_calls")}</span>
+                        <span className="rounded-md bg-sky-50 px-2 py-1 text-sky-700">图片调用 {usageNumber(item, "image_calls")}</span>
+                        <span className="rounded-md bg-amber-50 px-2 py-1 text-amber-700">产出图片 {usageNumber(item, "generated_images")}</span>
+                        <span className="rounded-md bg-stone-100 px-2 py-1">平均耗时 {formatAverageDuration(item)}</span>
                       </div>
                     </div>
 

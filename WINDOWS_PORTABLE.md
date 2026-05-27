@@ -7,7 +7,7 @@
 1. 下载 Windows 绿色包
 2. 解压
 3. 双击 `start.bat`
-4. 打开 `http://localhost:3000`
+4. 打开 `http://localhost:3000`，首次启动按页面提示设置管理员密码
 
 Cherry Studio / OpenAI 兼容接口填写：
 
@@ -24,8 +24,8 @@ chatgpt2api-windows-portable/
 ├─ app/
 │  ├─ main.py
 │  ├─ config.example.json
-│  ├─ config.json
 │  ├─ data/
+│  │  └─ config.json   # 首次启动后生成
 │  ├─ web_dist/
 │  └─ python_packages/
 └─ runtime/
@@ -79,6 +79,6 @@ stop.bat
 ## 注意
 
 - 发布前请检查 `app/config.example.json`，不要放真实账号、真实 token、真实密钥。
-- 用户自己的数据会放在 `app/data/`。
+- 用户自己的数据和管理员密码配置会放在 `app/data/`，管理员密码以哈希形式保存。
 - 默认端口是 `3000`。
 - 如果端口被占用，先运行 `stop.bat`，或者关闭占用 `3000` 端口的程序。

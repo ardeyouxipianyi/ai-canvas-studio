@@ -150,11 +150,16 @@ async function buildReferenceImageFromStoredImage(image: StoredImage, fileName: 
 }
 
 function taskDataToStoredImage(image: StoredImage, task: ImageTask): StoredImage {
+  const rawProgress = Number(task.progress ?? 0);
+  const progress = Number.isFinite(rawProgress) ? Math.max(0, Math.min(100, Math.round(rawProgress))) : 0;
+  const progressMessage = task.progress_message || (task.status === "queued" ? "排队中" : task.status === "running" ? "处理中" : undefined);
   if (task.status === "cancelled") {
     return {
       ...image,
       taskId: task.id,
       status: "error",
+      progress: 100,
+      progressMessage: task.progress_message || "已取消",
       error: task.error || "任务已取消",
     };
   }
@@ -166,6 +171,8 @@ function taskDataToStoredImage(image: StoredImage, task: ImageTask): StoredImage
         ...image,
         taskId: task.id,
         status: "error",
+        progress: 100,
+        progressMessage: task.progress_message || "失败",
         error: "未返回图片数据",
       };
     }
@@ -173,6 +180,8 @@ function taskDataToStoredImage(image: StoredImage, task: ImageTask): StoredImage
       ...image,
       taskId: task.id,
       status: "success",
+      progress: 100,
+      progressMessage: task.progress_message || "已完成",
       b64_json: first.b64_json,
       url: first.url,
       revised_prompt: first.revised_prompt,
@@ -185,6 +194,8 @@ function taskDataToStoredImage(image: StoredImage, task: ImageTask): StoredImage
       ...image,
       taskId: task.id,
       status: "error",
+      progress: 100,
+      progressMessage: task.progress_message || "失败",
       error: task.error || "生成失败",
     };
   }
@@ -193,6 +204,8 @@ function taskDataToStoredImage(image: StoredImage, task: ImageTask): StoredImage
     ...image,
     taskId: task.id,
     status: "loading",
+    progress,
+    progressMessage,
     error: undefined,
   };
 }

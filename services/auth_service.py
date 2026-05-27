@@ -13,6 +13,17 @@ from services.storage.base import StorageBackend
 
 AuthRole = Literal["admin", "user"]
 
+USAGE_STAT_KEYS = {
+    "total_calls",
+    "successful_calls",
+    "failed_calls",
+    "image_calls",
+    "image_successful_calls",
+    "image_failed_calls",
+    "generated_images",
+    "total_duration_ms",
+}
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -20,6 +31,22 @@ def _now_iso() -> str:
 
 def _hash_key(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _normalize_non_negative_int(value: object) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _normalize_usage(value: object) -> dict[str, object]:
+    source = value if isinstance(value, dict) else {}
+    usage = {key: _normalize_non_negative_int(source.get(key)) for key in USAGE_STAT_KEYS}
+    usage["last_call_at"] = str(source.get("last_call_at") or "").strip() or None
+    usage["last_success_at"] = str(source.get("last_success_at") or "").strip() or None
+    usage["last_failure_at"] = str(source.get("last_failure_at") or "").strip() or None
+    return usage
 
 
 class AuthService:
@@ -58,6 +85,7 @@ class AuthService:
             "enabled": bool(raw.get("enabled", True)),
             "created_at": created_at,
             "last_used_at": last_used_at,
+            "usage": _normalize_usage(raw.get("usage")),
         }
 
     def _load(self) -> list[dict[str, object]]:
@@ -84,6 +112,7 @@ class AuthService:
             "enabled": bool(item.get("enabled", True)),
             "created_at": item.get("created_at"),
             "last_used_at": item.get("last_used_at"),
+            "usage": _normalize_usage(item.get("usage")),
         }
 
     def list_keys(self, role: AuthRole | None = None) -> list[dict[str, object]]:
@@ -129,8 +158,7 @@ class AuthService:
         candidate = self._clean(raw_key)
         if not candidate:
             raise ValueError("请输入新的专用密钥")
-        admin_key = self._clean(config.auth_key)
-        if admin_key and hmac.compare_digest(candidate, admin_key):
+        if config.verify_admin_auth_key(candidate):
             raise ValueError("这个密钥和管理员密钥冲突了，请换一个新的密钥")
         key_hash = _hash_key(candidate)
         if self._has_key_hash_locked(key_hash, exclude_id=exclude_id):
@@ -189,6 +217,7 @@ class AuthService:
                 "enabled": True,
                 "created_at": _now_iso(),
                 "last_used_at": None,
+                "usage": _normalize_usage({}),
             }
             self._items.append(item)
             self._save()
@@ -244,6 +273,49 @@ class AuthService:
                 return False
             self._save()
             return True
+
+    def record_usage(
+        self,
+        identity: dict[str, object],
+        *,
+        endpoint: str = "",
+        status: str = "success",
+        duration_ms: int = 0,
+        generated_images: int = 0,
+    ) -> None:
+        key_id = self._clean(identity.get("id"))
+        if not key_id or key_id == "admin":
+            return
+        is_image_call = endpoint.startswith("/v1/images/") or endpoint.startswith("/api/image-tasks/")
+        succeeded = status == "success"
+        now = _now_iso()
+        with self._lock:
+            self._reload_locked()
+            for index, item in enumerate(self._items):
+                if self._clean(item.get("id")) != key_id:
+                    continue
+                usage = _normalize_usage(item.get("usage"))
+                usage["total_calls"] = _normalize_non_negative_int(usage.get("total_calls")) + 1
+                usage["total_duration_ms"] = _normalize_non_negative_int(usage.get("total_duration_ms")) + _normalize_non_negative_int(duration_ms)
+                usage["last_call_at"] = now
+                if succeeded:
+                    usage["successful_calls"] = _normalize_non_negative_int(usage.get("successful_calls")) + 1
+                    usage["last_success_at"] = now
+                else:
+                    usage["failed_calls"] = _normalize_non_negative_int(usage.get("failed_calls")) + 1
+                    usage["last_failure_at"] = now
+                if is_image_call:
+                    usage["image_calls"] = _normalize_non_negative_int(usage.get("image_calls")) + 1
+                    if succeeded:
+                        usage["image_successful_calls"] = _normalize_non_negative_int(usage.get("image_successful_calls")) + 1
+                    else:
+                        usage["image_failed_calls"] = _normalize_non_negative_int(usage.get("image_failed_calls")) + 1
+                    usage["generated_images"] = _normalize_non_negative_int(usage.get("generated_images")) + _normalize_non_negative_int(generated_images)
+                next_item = dict(item)
+                next_item["usage"] = usage
+                self._items[index] = next_item
+                self._save()
+                return
 
     def authenticate(self, raw_key: str) -> dict[str, object] | None:
         candidate = self._clean(raw_key)
