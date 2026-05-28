@@ -545,9 +545,10 @@ export function AccountsPageContent() {
                   </span>
                 </div>
                 <div className="flex flex-wrap items-center gap-2 text-xs text-stone-500">
-                  <span>{refreshJob.done}/{refreshJob.total}</span>
-                  <span>成功 {refreshJob.refreshed}</span>
-                  <span>失败 {refreshJob.failed}</span>
+                  <span>进度 {refreshJob.done}/{refreshJob.total}</span>
+                  <span>本次刷新成功 {refreshJob.refreshed}</span>
+                  <span>本次刷新失败 {refreshJob.failed}</span>
+                  <span>当前正常账户 {summary.active}</span>
                   {refreshJob.updated_at ? <span>更新于 {refreshJob.updated_at}</span> : null}
                   {!isRefreshing ? (
                     <Button
