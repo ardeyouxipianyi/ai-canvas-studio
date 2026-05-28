@@ -165,6 +165,41 @@
   }
 }
 
+@layer components {
+  .settings-workbench-content [data-slot="card"] {
+    border-color: rgba(214, 211, 209, 0.9) !important;
+    border-radius: 24px !important;
+    background: rgba(255, 255, 255, 0.95) !important;
+    box-shadow: 0 24px 80px -44px rgba(15, 23, 42, 0.5) !important;
+    backdrop-filter: blur(16px);
+  }
+
+  .settings-workbench-content > section:first-child {
+    margin-bottom: 16px;
+    border: 1px solid rgba(214, 211, 209, 0.9);
+    border-radius: 24px;
+    background: rgba(255, 255, 255, 0.95);
+    padding: 16px;
+    box-shadow: 0 24px 80px -44px rgba(15, 23, 42, 0.5);
+    backdrop-filter: blur(16px);
+  }
+
+  .settings-workbench-content [data-slot="card-content"] {
+    padding: 20px !important;
+  }
+
+  .settings-workbench-content section > [data-slot="card"],
+  .settings-workbench-content > [data-slot="card"] {
+    overflow: hidden;
+  }
+
+  .settings-workbench-content input,
+  .settings-workbench-content textarea,
+  .settings-workbench-content button[role="combobox"] {
+    box-shadow: none;
+  }
+}
+
 @keyframes grow {
   from { transform: scaleX(0); }
   to { transform: scaleX(1); }

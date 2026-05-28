@@ -107,7 +107,7 @@ $portableConfigJson = @'
     "passphrase": "",
     "include": {
       "config": true,
-      "register": true,
+      "register": false,
       "cpa": true,
       "sub2api": true,
       "logs": true,

@@ -11,19 +11,20 @@ import { cn } from "@/lib/utils";
 import { clearStoredAuthSession, type StoredAuthSession } from "@/store/auth";
 
 const adminNavItems = [
-  { href: "/image", label: "画图" },
   { href: "/canvas", label: "画布创作" },
-  { href: "/accounts", label: "号池管理" },
-  { href: "/register", label: "注册机" },
-  { href: "/image-manager", label: "图片管理" },
-  { href: "/logs", label: "日志管理" },
   { href: "/settings", label: "设置" },
 ];
 
 const userNavItems = [
-  { href: "/image", label: "画图" },
   { href: "/canvas", label: "画布创作" },
 ];
+
+function isActiveNavItem(pathname: string, href: string) {
+  if (href === "/settings") {
+    return pathname === "/settings" || pathname.startsWith("/settings/");
+  }
+  return pathname === href || pathname.startsWith(`${href}/`);
+}
 
 export function TopNav() {
   const pathname = usePathname();
@@ -73,7 +74,7 @@ export function TopNav() {
       <div className="flex min-h-12 flex-col gap-1 px-3 py-2 sm:h-12 sm:flex-row sm:items-center sm:justify-between sm:gap-3 sm:px-6 sm:py-0">
         <div className="flex items-center justify-between gap-2 sm:justify-start sm:gap-3">
           <Link
-            href="/image"
+            href="/canvas"
             className="shrink-0 py-1 text-[15px] font-bold tracking-tight text-stone-950 transition hover:text-stone-700"
           >
             chatgpt2api
@@ -98,7 +99,7 @@ export function TopNav() {
         </div>
         <nav className="hide-scrollbar -mx-1 flex min-w-0 flex-1 gap-1 overflow-x-auto px-1 sm:mx-0 sm:justify-center sm:gap-8 sm:overflow-visible sm:px-0">
           {navItems.map((item) => {
-            const active = pathname === item.href;
+            const active = isActiveNavItem(pathname, item.href);
             return (
               <Link
                 key={item.href}

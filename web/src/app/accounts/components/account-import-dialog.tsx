@@ -26,6 +26,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
+import { formatAccountRefreshError } from "@/lib/account-refresh-errors";
 import { createAccounts, type Account, type AccountRefreshJob } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
@@ -150,9 +151,9 @@ export function AccountImportDialog({ disabled, onImported, onRefreshJobStarted 
       resetState();
 
       if ((data.errors?.length ?? 0) > 0) {
-        const firstError = data.errors?.[0]?.error;
+        const refreshError = formatAccountRefreshError(data.errors?.[0]?.error);
         toast.error(
-          `${successText ?? "导入完成"}，新增 ${data.added ?? 0} 个，已刷新 ${data.refreshed ?? 0} 个，失败 ${data.errors?.length ?? 0} 个${firstError ? `，首个错误：${firstError}` : ""}`,
+          `${successText ?? "导入完成"}，新增 ${data.added ?? 0} 个，已刷新 ${data.refreshed ?? 0} 个，失败 ${data.errors?.length ?? 0} 个。${refreshError}`,
         );
       } else {
         toast.success(

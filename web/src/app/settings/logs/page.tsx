@@ -4,11 +4,11 @@ import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { LoaderCircle } from "lucide-react";
 
-export default function ImagePage() {
+export default function SettingsLogsRedirectPage() {
   const router = useRouter();
 
   useEffect(() => {
-    router.replace("/canvas");
+    router.replace("/settings#logs");
   }, [router]);
 
   return (

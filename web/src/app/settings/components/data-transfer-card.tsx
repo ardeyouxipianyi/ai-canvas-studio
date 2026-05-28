@@ -21,14 +21,13 @@ const transferItems: Array<{ key: keyof BackupInclude; label: string; note: stri
   { key: "image_canvas", label: "画布项目", note: "画布节点与连接关系" },
   { key: "images", label: "生成图片", note: "本地生成图片与标签" },
   { key: "logs", label: "运行日志", note: "调用日志与账号事件" },
-  { key: "register", label: "注册配置", note: "注册模块配置" },
   { key: "cpa", label: "CPA 配置", note: "CPA 连接配置" },
   { key: "sub2api", label: "Sub2API 配置", note: "Sub2API 连接配置" },
 ];
 
 const defaultInclude: BackupInclude = {
   config: true,
-  register: true,
+  register: false,
   cpa: true,
   sub2api: true,
   logs: true,

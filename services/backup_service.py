@@ -267,7 +267,6 @@ def _normalize_transfer_include(value: object) -> dict[str, bool]:
     source = value if isinstance(value, dict) else {}
     keys = (
         "config",
-        "register",
         "cpa",
         "sub2api",
         "logs",
@@ -672,7 +671,6 @@ class BackupService:
                 mark("config")
 
         file_targets = {
-            "register": (DATA_DIR / "register.json", "data/register.json"),
             "cpa": (DATA_DIR / "cpa_config.json", "data/cpa_config.json"),
             "sub2api": (DATA_DIR / "sub2api_config.json", "data/sub2api_config.json"),
             "logs": (DATA_DIR / "logs.jsonl", "data/logs.jsonl"),
@@ -683,7 +681,7 @@ class BackupService:
         for key, (target, archive_name) in file_targets.items():
             if not selected.get(key):
                 continue
-            if archive_redacted and key in {"register", "cpa", "sub2api"}:
+            if archive_redacted and key in {"cpa", "sub2api"}:
                 skip(key)
                 continue
             raw = members.get(archive_name)
@@ -968,8 +966,6 @@ class BackupService:
             self._add_bytes_to_archive(archive, "backup-metadata.json", _json_bytes(metadata))
             if include.get("config"):
                 add_json_or_raw(archive, CONFIG_FILE, "config.json")
-            if include.get("register"):
-                add_json_or_raw(archive, DATA_DIR / "register.json", "data/register.json")
             if include.get("cpa"):
                 add_json_or_raw(archive, DATA_DIR / "cpa_config.json", "data/cpa_config.json")
             if include.get("sub2api"):

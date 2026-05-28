@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { BoxSelect, Columns2, Copy, Download, ImagePlus, LoaderCircle, LocateFixed, Maximize2, Plus, RefreshCcw, Save, ScissorsLineDashed, Star, Trash2, Workflow, X, ZoomIn, ZoomOut } from "lucide-react";
+import { BoxSelect, Columns2, Copy, Download, ImagePlus, LoaderCircle, LocateFixed, Maximize2, PanelLeft, PanelRight, Plus, RefreshCcw, Save, ScissorsLineDashed, Settings, Star, Trash2, Workflow, X, ZoomIn, ZoomOut } from "lucide-react";
 import { toast } from "sonner";
 
 import { ImageComposer } from "@/app/image/components/image-composer";
@@ -34,8 +34,8 @@ const nodeSize = {
   edit: { width: 320, height: 220 },
   image: { width: 300, height: 286 },
 };
-const GENERATION_RESULT_X_OFFSET = 430;
-const GENERATION_RESULT_Y_STEP = 330;
+const GENERATION_RESULT_GAP = 32;
+const GENERATION_RESULT_Y_OFFSET = 86;
 const edgePalette = [
   { stroke: "#2563eb", glow: "rgba(37,99,235,0.14)" },
   { stroke: "#059669", glow: "rgba(5,150,105,0.14)" },
@@ -253,25 +253,50 @@ async function downloadImageNode(node: ImageCanvasNode) {
   URL.revokeObjectURL(url);
 }
 
-function getEdgePath(from: ImageCanvasNode, to: ImageCanvasNode) {
-  const fromCenterX = from.x + from.width / 2;
-  const toCenterX = to.x + to.width / 2;
-  const isDownward = to.y > from.y + from.height && Math.abs(fromCenterX - toCenterX) < Math.max(from.width, to.width);
-  if (isDownward) {
-    const startX = fromCenterX;
-    const startY = from.y + from.height;
-    const endX = toCenterX;
-    const endY = to.y;
-    const bend = Math.max(70, (endY - startY) * 0.5);
-    return `M ${startX} ${startY} C ${startX} ${startY + bend}, ${endX} ${endY - bend}, ${endX} ${endY}`;
+function getDownwardEdgePath(from: ImageCanvasNode, to: ImageCanvasNode) {
+  const startX = from.x + from.width / 2;
+  const startY = from.y + from.height;
+  const endX = to.x + to.width / 2;
+  const endY = to.y;
+  const verticalGap = Math.max(1, endY - startY);
+  const trunkY = startY + clamp(verticalGap * 0.38, 42, 86);
+  const horizontalDistance = Math.abs(endX - startX);
+
+  if (horizontalDistance < 6) {
+    return `M ${startX} ${startY} L ${endX} ${endY}`;
   }
 
-  const startX = from.x + from.width;
+  const direction = endX > startX ? 1 : -1;
+  const radius = Math.min(18, horizontalDistance / 2, Math.max(0, endY - trunkY) / 2);
+
+  return [
+    `M ${startX} ${startY}`,
+    `L ${startX} ${trunkY - radius}`,
+    `Q ${startX} ${trunkY} ${startX + direction * radius} ${trunkY}`,
+    `L ${endX - direction * radius} ${trunkY}`,
+    `Q ${endX} ${trunkY} ${endX} ${trunkY + radius}`,
+    `L ${endX} ${endY}`,
+  ].join(" ");
+}
+
+function getSideEdgePath(from: ImageCanvasNode, to: ImageCanvasNode) {
+  const fromCenterX = from.x + from.width / 2;
+  const toCenterX = to.x + to.width / 2;
+  const targetIsRight = toCenterX >= fromCenterX;
+  const startX = targetIsRight ? from.x + from.width : from.x;
   const startY = from.y + from.height / 2;
-  const endX = to.x;
+  const endX = targetIsRight ? to.x : to.x + to.width;
   const endY = to.y + to.height / 2;
-  const bend = Math.max(80, Math.abs(endX - startX) * 0.45);
-  return `M ${startX} ${startY} C ${startX + bend} ${startY}, ${endX - bend} ${endY}, ${endX} ${endY}`;
+  const direction = targetIsRight ? 1 : -1;
+  const bend = Math.max(72, Math.abs(endX - startX) * 0.42);
+  return `M ${startX} ${startY} C ${startX + direction * bend} ${startY}, ${endX - direction * bend} ${endY}, ${endX} ${endY}`;
+}
+
+function getEdgePath(from: ImageCanvasNode, to: ImageCanvasNode) {
+  if (to.y >= from.y + from.height + 16) {
+    return getDownwardEdgePath(from, to);
+  }
+  return getSideEdgePath(from, to);
 }
 
 function hashString(value: string) {
@@ -473,6 +498,8 @@ function findNonOverlappingCanvasPosition(
 }
 
 function generationBranchRects(origin: CanvasPlacement, count: number): CanvasRect[] {
+  const resultBaseX = generationResultBaseX(origin, count);
+  const resultY = generationResultY(origin);
   return [
     {
       x: origin.x,
@@ -481,12 +508,21 @@ function generationBranchRects(origin: CanvasPlacement, count: number): CanvasRe
       height: nodeSize.prompt.height,
     },
     ...Array.from({ length: count }, (_, index) => ({
-      x: origin.x + GENERATION_RESULT_X_OFFSET,
-      y: origin.y + index * GENERATION_RESULT_Y_STEP,
+      x: resultBaseX + index * (nodeSize.image.width + GENERATION_RESULT_GAP),
+      y: resultY,
       width: nodeSize.image.width,
       height: nodeSize.image.height,
     })),
   ];
+}
+
+function generationResultBaseX(origin: CanvasPlacement, count: number) {
+  const totalWidth = count * nodeSize.image.width + Math.max(0, count - 1) * GENERATION_RESULT_GAP;
+  return origin.x + nodeSize.prompt.width / 2 - totalWidth / 2;
+}
+
+function generationResultY(origin: CanvasPlacement) {
+  return origin.y + nodeSize.prompt.height + GENERATION_RESULT_Y_OFFSET;
 }
 
 function viewportForBounds(bounds: NonNullable<ReturnType<typeof getCanvasBounds>>, viewportWidth: number, viewportHeight: number) {
@@ -629,8 +665,8 @@ function layoutConnectedCanvasNodes(nodes: ImageCanvasNode[], edges: ImageCanvas
     if (!changed) break;
   }
 
-  const gapX = 52;
-  const gapY = 92;
+  const gapX = 72;
+  const gapY = 108;
   const startX = 100;
   const startY = 92;
   const positions = new Map<string, { x: number; y: number }>();
@@ -691,24 +727,6 @@ function layoutConnectedCanvasNodes(nodes: ImageCanvasNode[], edges: ImageCanvas
     if (!node || !position || !bounds) return;
     position.x = bounds.minX + bounds.width / 2 - node.width / 2;
   };
-  const placeChildrenUnder = (nodeId: string, childIds: string[]) => {
-    const node = nodeMap.get(nodeId);
-    const position = positions.get(nodeId);
-    const children = childIds
-      .map((id) => nodeMap.get(id))
-      .filter((child): child is ImageCanvasNode => Boolean(child))
-      .sort((a, b) => (positions.get(a.id)?.x ?? 0) - (positions.get(b.id)?.x ?? 0) || compareOriginalPosition(a.id, b.id));
-    if (!node || !position || children.length === 0) return;
-    const totalWidth = children.reduce((total, child) => total + child.width, 0) + (children.length - 1) * gapX;
-    let childLeft = position.x + node.width / 2 - totalWidth / 2;
-    for (const child of children) {
-      const childPosition = positions.get(child.id);
-      if (childPosition) {
-        childPosition.x = childLeft;
-        childLeft += child.width + gapX;
-      }
-    }
-  };
   const resolveRowCollisions = () => {
     for (const row of rowMap.values()) {
       const ordered = [...row].sort((a, b) => (positions.get(a.id)?.x ?? 0) - (positions.get(b.id)?.x ?? 0) || compareOriginalPosition(a.id, b.id));
@@ -723,16 +741,23 @@ function layoutConnectedCanvasNodes(nodes: ImageCanvasNode[], edges: ImageCanvas
       }
     }
   };
+  const centerAnchorsForNode = (node: ImageCanvasNode) => {
+    const childIds = childrenMap.get(node.id) || [];
+    if (node.type === "edit") {
+      const imageParentIds = (parentMap.get(node.id) || []).filter((id) => nodeMap.get(id)?.type === "image");
+      const imageChildIds = childIds.filter((id) => nodeMap.get(id)?.type === "image");
+      return [...imageParentIds, ...imageChildIds];
+    }
+    return childIds;
+  };
+  const bottomUpNodes = [...nodes].sort((a, b) => {
+    const layerDiff = (layers.get(b.id) || 0) - (layers.get(a.id) || 0);
+    return layerDiff || compareOriginalPosition(a.id, b.id);
+  });
 
-  for (let iteration = 0; iteration < 2; iteration += 1) {
-    for (const node of nodes) {
-      if (node.type === "prompt") {
-        centerNodeOver(node.id, (childrenMap.get(node.id) || []).filter((id) => nodeMap.get(id)?.type === "image"));
-      }
-      if (node.type === "edit") {
-        centerNodeOver(node.id, (parentMap.get(node.id) || []).filter((id) => nodeMap.get(id)?.type === "image"));
-        placeChildrenUnder(node.id, (childrenMap.get(node.id) || []).filter((id) => nodeMap.get(id)?.type === "image"));
-      }
+  for (let iteration = 0; iteration < 4; iteration += 1) {
+    for (const node of bottomUpNodes) {
+      centerNodeOver(node.id, centerAnchorsForNode(node));
     }
     resolveRowCollisions();
   }
@@ -760,7 +785,8 @@ function layoutCanvasNodes(nodes: ImageCanvasNode[], edges: ImageCanvasEdge[]) {
   const now = new Date().toISOString();
 
   for (const group of groups) {
-    const bounds = getCanvasBounds(group);
+    const arrangedGroup = layoutConnectedCanvasNodes(group, edges);
+    const bounds = getCanvasBounds(arrangedGroup);
     if (!bounds) continue;
     if (rowLeft > startX && rowLeft + bounds.width > maxRowRight) {
       rowLeft = startX;
@@ -769,7 +795,7 @@ function layoutCanvasNodes(nodes: ImageCanvasNode[], edges: ImageCanvasEdge[]) {
     }
     const offsetX = rowLeft - bounds.minX;
     const offsetY = rowTop - bounds.minY;
-    const movedGroup = group.map((node) => ({
+    const movedGroup = arrangedGroup.map((node) => ({
       ...node,
       x: node.x + offsetX,
       y: node.y + offsetY,
@@ -797,6 +823,8 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
   const [projects, setProjects] = useState<ImageCanvasProject[]>([]);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [leftPanelOpen, setLeftPanelOpen] = useState(false);
+  const [rightPanelOpen, setRightPanelOpen] = useState(false);
   const [deleteProjectTarget, setDeleteProjectTarget] = useState<ImageCanvasProject | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [saveState, setSaveState] = useState<"saved" | "saving">("saved");
@@ -851,6 +879,12 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
   useEffect(() => {
     activeProjectRef.current = activeProject;
   }, [activeProject]);
+
+  useEffect(() => {
+    if (selectedNodeId) {
+      setRightPanelOpen(true);
+    }
+  }, [selectedNodeId]);
 
   useEffect(() => {
     if (!selectedEditNode) return;
@@ -1319,13 +1353,15 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
       createdAt: now,
       updatedAt: now,
     };
+    const resultBaseX = generationResultBaseX(promptNode, count);
+    const resultY = generationResultY(promptNode);
     const imageNodes: ImageCanvasNode[] = Array.from({ length: count }, (_, index) => {
       const id = createImageCanvasId();
       return {
         id,
         type: "image",
-        x: promptNode.x + GENERATION_RESULT_X_OFFSET,
-        y: promptNode.y + index * GENERATION_RESULT_Y_STEP,
+        x: resultBaseX + index * (nodeSize.image.width + GENERATION_RESULT_GAP),
+        y: resultY,
         ...nodeSize.image,
         title: count > 1 ? `生成结果 ${index + 1}` : "生成结果",
         prompt,
@@ -1950,17 +1986,18 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
   const tidyCanvasLayout = useCallback(async () => {
     const project = activeProjectRef.current;
     if (!project || project.nodes.length === 0) return;
+    const nextNodes = layoutCanvasNodes(project.nodes, project.edges);
     const nextProject = await persistProject({
       ...project,
-      nodes: layoutCanvasNodes(project.nodes, project.edges),
+      nodes: nextNodes,
     });
-    if (selectedNodeId && nextProject?.nodes.some((node) => node.id === selectedNodeId)) {
-      await focusCanvasNode(selectedNodeId);
-    } else {
-      await fitCanvasToNodes();
+    const rect = canvasRef.current?.getBoundingClientRect();
+    const bounds = getCanvasBounds(nextProject?.nodes || nextNodes);
+    if (rect && bounds) {
+      await updateViewport(viewportForBounds(bounds, rect.width, rect.height));
     }
     toast.success("画布分支已整理");
-  }, [fitCanvasToNodes, focusCanvasNode, persistProject, selectedNodeId]);
+  }, [persistProject, updateViewport]);
 
   const handleWheel = useCallback(
     (event: React.WheelEvent<HTMLDivElement>) => {
@@ -2080,7 +2117,7 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
 
   if (isLoading) {
     return (
-      <div className="flex min-h-[40vh] items-center justify-center">
+      <div className="fixed inset-0 z-40 flex h-[100dvh] w-screen items-center justify-center bg-[#f7f6f2]">
         <LoaderCircle className="size-5 animate-spin text-stone-400" />
       </div>
     );
@@ -2096,16 +2133,26 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
 
   return (
     <>
-    <section className="mx-auto grid h-[calc(100dvh-5.5rem)] min-h-0 w-full max-w-[1700px] grid-cols-1 overflow-hidden px-2 pb-3 sm:h-[calc(100dvh-4rem)] sm:px-4 xl:grid-cols-[260px_minmax(0,1fr)_320px] xl:gap-3">
-      <aside className="hidden min-h-0 flex-col overflow-hidden border-r border-stone-200/70 pr-3 xl:flex">
+    <section className="fixed inset-0 z-40 h-[100dvh] w-screen overflow-hidden bg-[#f7f6f2] text-stone-900">
+      <aside
+        className={cn(
+          "absolute left-3 top-16 z-[70] w-[min(360px,calc(100vw-1.5rem))] max-h-[calc(100dvh-5rem)] min-h-0 flex-col overflow-hidden rounded-[24px] border border-stone-200 bg-white/95 p-3 shadow-[0_24px_90px_-38px_rgba(15,23,42,0.5)] backdrop-blur",
+          leftPanelOpen ? "flex" : "hidden",
+        )}
+      >
         <div className="flex items-center justify-between gap-2 py-3">
           <div>
             <h1 className="text-base font-semibold tracking-tight text-stone-950">画布创作</h1>
             <p className="text-xs text-stone-500">提示词、结果和编辑分支会自动保存</p>
           </div>
-          <Button className="h-9 rounded-xl bg-stone-950 px-3 text-white" onClick={() => void createProject()}>
-            <Plus className="size-4" />
-          </Button>
+          <div className="flex items-center gap-1.5">
+            <Button className="h-9 rounded-xl bg-stone-950 px-3 text-white" onClick={() => void createProject()}>
+              <Plus className="size-4" />
+            </Button>
+            <Button variant="outline" className="h-9 w-9 rounded-xl border-stone-200 bg-white px-0" onClick={() => setLeftPanelOpen(false)} aria-label="收起左侧面板">
+              <X className="size-4" />
+            </Button>
+          </div>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto pb-4">
           <div className="rounded-2xl border border-stone-200 bg-white p-3 shadow-sm">
@@ -2312,38 +2359,61 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
         </div>
       </aside>
 
-      <main className="relative isolate min-h-0 overflow-hidden rounded-[24px] border border-stone-200 bg-[#f7f6f2]">
+      <main className="absolute inset-0 isolate overflow-hidden bg-[#f7f6f2]">
         <div className="pointer-events-none absolute inset-0 z-0 opacity-80 [background-image:linear-gradient(rgba(68,64,60,0.08)_1px,transparent_1px),linear-gradient(90deg,rgba(68,64,60,0.08)_1px,transparent_1px)] [background-size:28px_28px]" />
-        <div className="absolute left-3 top-3 z-40 flex max-w-[calc(100%-1.5rem)] flex-wrap items-center gap-2">
-          <div className="rounded-full border border-stone-200 bg-white/95 px-3 py-2 text-xs font-medium text-stone-600 shadow-sm">
-            {saveState === "saving" ? "保存中" : "已自动保存"} · {runningCount} 个任务处理中
+        <div className="hide-scrollbar absolute inset-x-3 top-3 z-40 flex flex-nowrap items-center gap-2 overflow-x-auto pb-1">
+          <div className="flex h-9 shrink-0 items-center gap-2 rounded-full border border-stone-200 bg-white/95 px-3 text-xs font-medium text-stone-700 shadow-sm backdrop-blur">
+            <span className="font-semibold text-stone-950">画布工作台</span>
+            <span className="hidden text-stone-300 sm:inline">/</span>
+            <span className="hidden max-w-[180px] truncate sm:inline">{activeProject.title}</span>
+            <span className="text-stone-300">·</span>
+            <span>{saveState === "saving" ? "保存中" : "已保存"}</span>
+            <span className={cn("rounded-full px-2 py-0.5", runningCount > 0 ? "bg-amber-50 text-amber-700" : "bg-stone-100 text-stone-500")}>
+              {runningCount}
+            </span>
           </div>
-          <Button variant="outline" className="h-9 rounded-full border-stone-200 bg-white/95 px-3" onClick={() => void persistProject(activeProject)}>
+          <Button variant="outline" className={cn("h-9 rounded-full border-stone-200 bg-white/95 px-3 backdrop-blur", leftPanelOpen && "border-stone-900 text-stone-950")} onClick={() => setLeftPanelOpen((open) => !open)}>
+            <PanelLeft className="size-4" />
+            <span className="hidden sm:inline">项目</span>
+          </Button>
+          <Button variant="outline" className={cn("h-9 rounded-full border-stone-200 bg-white/95 px-3 backdrop-blur", rightPanelOpen && "border-stone-900 text-stone-950")} onClick={() => setRightPanelOpen((open) => !open)}>
+            <PanelRight className="size-4" />
+            <span className="hidden sm:inline">节点</span>
+          </Button>
+          <Button variant="outline" className="h-9 rounded-full border-stone-200 bg-white/95 px-3 backdrop-blur" onClick={() => void persistProject(activeProject)}>
             <Save className="size-4" />
-            保存
+            <span className="hidden sm:inline">保存</span>
           </Button>
-          <Button variant="outline" className="h-9 rounded-full border-stone-200 bg-white/95 px-3" onClick={exportActiveProject} disabled={activeProject.nodes.length === 0}>
+          <Button variant="outline" className="h-9 rounded-full border-stone-200 bg-white/95 px-3 backdrop-blur" onClick={exportActiveProject} disabled={activeProject.nodes.length === 0}>
             <Download className="size-4" />
-            导出
+            <span className="hidden sm:inline">导出</span>
           </Button>
-          <Button variant="outline" className="h-9 rounded-full border-stone-200 bg-white/95 px-3" onClick={() => void tidyCanvasLayout()} disabled={activeProject.nodes.length === 0}>
+          <Button variant="outline" className="h-9 rounded-full border-stone-200 bg-white/95 px-3 backdrop-blur" onClick={() => void tidyCanvasLayout()} disabled={activeProject.nodes.length === 0}>
             <Workflow className="size-4" />
-            整理
+            <span className="hidden sm:inline">整理</span>
           </Button>
-          <Button variant="outline" className="h-9 rounded-full border-stone-200 bg-white/95 px-3" onClick={() => void fitCanvasToNodes()} disabled={activeProject.nodes.length === 0}>
+          <Button variant="outline" className="h-9 rounded-full border-stone-200 bg-white/95 px-3 backdrop-blur" onClick={() => void fitCanvasToNodes()} disabled={activeProject.nodes.length === 0}>
             <Maximize2 className="size-4" />
-            适配
+            <span className="hidden sm:inline">适配</span>
           </Button>
-          <Button variant="outline" className="h-9 rounded-full border-stone-200 bg-white/95 px-3" onClick={() => void focusSelectedNode()} disabled={!selectedNode}>
+          <Button variant="outline" className="h-9 rounded-full border-stone-200 bg-white/95 px-3 backdrop-blur" onClick={() => void focusSelectedNode()} disabled={!selectedNode}>
             <LocateFixed className="size-4" />
-            定位
+            <span className="hidden sm:inline">定位</span>
           </Button>
-          <Button variant="outline" className="h-9 rounded-full border-stone-200 bg-white/95 px-3" onClick={() => zoomBy(-0.12)}>
+          <Button variant="outline" className="h-9 rounded-full border-stone-200 bg-white/95 px-3 backdrop-blur" onClick={() => zoomBy(-0.12)} title="缩小">
             <ZoomOut className="size-4" />
           </Button>
-          <Button variant="outline" className="h-9 rounded-full border-stone-200 bg-white/95 px-3" onClick={() => zoomBy(0.12)}>
+          <Button variant="outline" className="h-9 rounded-full border-stone-200 bg-white/95 px-3 backdrop-blur" onClick={() => zoomBy(0.12)} title="放大">
             <ZoomIn className="size-4" />
           </Button>
+          {isAdmin ? (
+            <Button asChild variant="outline" className="h-9 rounded-full border-stone-200 bg-white/95 px-3 backdrop-blur">
+              <a href="/settings">
+                <Settings className="size-4" />
+                <span className="hidden sm:inline">设置</span>
+              </a>
+            </Button>
+          ) : null}
         </div>
 
         <div className="pointer-events-auto absolute inset-x-3 bottom-3 z-50">
@@ -2450,6 +2520,7 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
               const nodeProgress = getNodeProgress(node);
               const nodeProgressMessage = node.progressMessage || getStatusLabel(node.status);
               const isSelected = node.id === selectedNodeId;
+              const isSelectedImageNode = isSelected && node.type === "image";
               const isCompareSelected = compareNodeIds.includes(node.id);
               const upstreamColor = isSelected ? undefined : upstreamHighlight.nodeColors.get(node.id);
               return (
@@ -2458,7 +2529,11 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
                   data-canvas-node="true"
                   className={cn(
                     "absolute overflow-hidden rounded-[20px] border bg-white shadow-[0_18px_70px_-44px_rgba(15,23,42,0.55)] transition",
-                    isSelected ? "border-stone-950 ring-4 ring-stone-950/10" : "border-stone-200",
+                    isSelectedImageNode
+                      ? "border-blue-500 ring-4 ring-blue-500/25 shadow-[0_24px_90px_-36px_rgba(37,99,235,0.55)]"
+                      : isSelected
+                        ? "border-stone-950 ring-4 ring-stone-950/10"
+                        : "border-stone-200",
                   )}
                   style={{
                     left: node.x,
@@ -2482,13 +2557,17 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
                   onPointerCancel={handlePointerUp}
                 >
                   <header
-                    className="flex cursor-grab items-center justify-between gap-2 border-b border-stone-100 bg-stone-50 px-3 py-2 active:cursor-grabbing"
+                    className={cn(
+                      "flex cursor-grab items-center justify-between gap-2 border-b px-3 py-2 active:cursor-grabbing",
+                      isSelectedImageNode ? "border-blue-100 bg-blue-50" : "border-stone-100 bg-stone-50",
+                    )}
                     onPointerDown={(event) => handleNodePointerDown(event, node)}
                   >
                     <div className="flex min-w-0 items-center gap-2">
                       {node.type === "prompt" ? <BoxSelect className="size-4 text-stone-500" /> : node.type === "edit" ? <ScissorsLineDashed className="size-4 text-stone-500" /> : <ImagePlus className="size-4 text-stone-500" />}
                       <span className="truncate text-sm font-semibold text-stone-800">{node.title}</span>
                       {node.favorite ? <Star className="size-3.5 fill-amber-400 text-amber-500" /> : null}
+                      {isSelectedImageNode ? <span className="shrink-0 rounded-full bg-blue-600 px-2 py-0.5 text-[10px] font-medium text-white">当前选中</span> : null}
                     </div>
                     <span className={cn("shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-medium", nodeStatusClass(node.status))}>
                       {node.status === "generating" ? <LoaderCircle className="mr-1 inline size-3 animate-spin" /> : null}
@@ -2498,7 +2577,7 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
 
                   {node.type === "image" ? (
                     <div className="p-3">
-                      <div className="flex h-[188px] items-center justify-center overflow-hidden rounded-2xl border border-stone-200 bg-stone-50">
+                      <div className={cn("flex h-[188px] items-center justify-center overflow-hidden rounded-2xl border bg-stone-50", isSelectedImageNode ? "border-blue-300 bg-blue-50" : "border-stone-200")}>
                         {node.status === "success" && imageSrc ? (
                           <button
                             type="button"
@@ -2577,6 +2656,18 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
                               <Button className="h-8 rounded-full bg-stone-950 px-3 text-xs text-white hover:bg-stone-800" onClick={() => setSelectedNodeId(node.id)}>
                                 编辑
                               </Button>
+                              <Button
+                                variant="outline"
+                                className="h-8 rounded-full border-rose-200 px-2.5 text-xs text-rose-700 hover:bg-rose-50"
+                                title="删除节点"
+                                aria-label="删除节点"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  void deleteNode(node.id);
+                                }}
+                              >
+                                <Trash2 className="size-3.5" />
+                              </Button>
                             </>
                           ) : node.status === "queued" || node.status === "generating" ? (
                             <Button variant="outline" className="h-8 rounded-full border-stone-200 px-3 text-xs" onClick={() => void cancelNodeTask(node)}>
@@ -2621,8 +2712,13 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
         </div>
       </main>
 
-      <aside className="hidden min-h-0 flex-col overflow-hidden border-l border-stone-200/70 pl-3 xl:flex">
-        <div className="border-b border-stone-200/70 py-3">
+      <aside
+        className={cn(
+          "absolute right-3 top-16 z-[70] w-[min(380px,calc(100vw-1.5rem))] max-h-[calc(100dvh-5rem)] min-h-0 flex-col overflow-hidden rounded-[24px] border border-stone-200 bg-white/95 p-3 shadow-[0_24px_90px_-38px_rgba(15,23,42,0.5)] backdrop-blur",
+          rightPanelOpen ? "flex" : "hidden",
+        )}
+      >
+        <div className="flex items-center gap-2 border-b border-stone-200/70 py-3">
           <Input
             value={activeProject.title}
             onChange={(event) => {
@@ -2631,6 +2727,9 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
             }}
             className="h-10 rounded-xl border-stone-200 bg-white text-sm font-semibold"
           />
+          <Button variant="outline" className="h-10 w-10 rounded-xl border-stone-200 bg-white px-0" onClick={() => setRightPanelOpen(false)} aria-label="收起右侧面板">
+            <X className="size-4" />
+          </Button>
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto py-3">
@@ -2657,46 +2756,26 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
                     : "选中一张已完成的图片后，底部输入框会切换为继续编辑模式。"}
               </div>
 
-              <div className="flex gap-2">
-                <Button
-                  variant="outline"
-                  className={cn("h-9 flex-1 rounded-xl border-stone-200 bg-white", selectedNode.favorite ? "border-amber-200 bg-amber-50 text-amber-700" : "")}
-                  onClick={() => void toggleNodeFavorite(selectedNode)}
-                >
-                  <Star className={cn("size-4", selectedNode.favorite ? "fill-current" : "")} />
-                  {selectedNode.favorite ? "已收藏" : "收藏"}
-                </Button>
-                {selectedNode.type === "image" && selectedNode.status === "success" ? (
-                  <Button variant="outline" className="h-9 flex-1 rounded-xl border-stone-200 bg-white" onClick={() => void downloadImageNode(selectedNode)}>
-                    <Download className="size-4" />
-                    下载
-                  </Button>
-                ) : null}
-                {selectedNode.type === "image" && selectedNode.status === "success" ? (
-                  <Button variant="outline" className="h-9 flex-1 rounded-xl border-stone-200 bg-white" onClick={() => void copyImageNode(selectedNode)}>
-                    <Copy className="size-4" />
-                    复制
-                  </Button>
-                ) : null}
-                {selectedNode.type === "image" && selectedNode.status === "success" ? (
+              {selectedNode.type === "image" ? null : (
+                <div className="flex gap-2">
                   <Button
                     variant="outline"
-                    className={cn("h-9 flex-1 rounded-xl border-stone-200 bg-white", compareNodeIds.includes(selectedNode.id) ? "border-blue-200 bg-blue-50 text-blue-700" : "")}
-                    onClick={() => toggleCompareNode(selectedNode)}
+                    className={cn("h-9 flex-1 rounded-xl border-stone-200 bg-white", selectedNode.favorite ? "border-amber-200 bg-amber-50 text-amber-700" : "")}
+                    onClick={() => void toggleNodeFavorite(selectedNode)}
                   >
-                    <Columns2 className="size-4" />
-                    对比
+                    <Star className={cn("size-4", selectedNode.favorite ? "fill-current" : "")} />
+                    {selectedNode.favorite ? "已收藏" : "收藏"}
                   </Button>
-                ) : null}
-                <Button variant="outline" className="h-9 flex-1 rounded-xl border-rose-200 bg-white text-rose-700" onClick={() => void deleteSelectedNode()}>
-                  <Trash2 className="size-4" />
-                  删除节点
-                </Button>
-              </div>
+                  <Button variant="outline" className="h-9 flex-1 rounded-xl border-rose-200 bg-white text-rose-700" onClick={() => void deleteSelectedNode()}>
+                    <Trash2 className="size-4" />
+                    删除节点
+                  </Button>
+                </div>
+              )}
             </div>
           ) : (
             <div className="rounded-2xl border border-stone-200 bg-stone-50 px-4 py-5 text-sm leading-6 text-stone-500">
-              选中节点后可以查看提示词、下载图片，或从结果图继续编辑生成分支。
+              选中节点后可以查看提示词和节点关系，或通过节点导航快速定位。
             </div>
           )}
 

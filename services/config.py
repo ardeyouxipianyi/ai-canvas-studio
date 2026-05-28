@@ -38,7 +38,7 @@ CONFIG_FILE = _resolve_runtime_config_file()
 
 DEFAULT_BACKUP_INCLUDE = {
     "config": True,
-    "register": True,
+    "register": False,
     "cpa": True,
     "sub2api": True,
     "logs": True,
@@ -81,6 +81,7 @@ def _normalize_backup_include(value: object) -> dict[str, bool]:
     normalized = dict(DEFAULT_BACKUP_INCLUDE)
     for key in normalized:
         normalized[key] = _normalize_bool(source.get(key), normalized[key])
+    normalized["register"] = False
     return normalized
 
 

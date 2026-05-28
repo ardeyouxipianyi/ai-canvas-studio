@@ -66,7 +66,6 @@ function getFilenameFromContentDisposition(value: string | null) {
 const includeLabels: Array<{ key: keyof BackupInclude; label: string }> = [
   { key: "image_conversations", label: "Image conversations" },
   { key: "config", label: "系统配置" },
-  { key: "register", label: "注册配置" },
   { key: "cpa", label: "CPA 配置" },
   { key: "sub2api", label: "Sub2API 配置" },
   { key: "logs", label: "调度与调用日志" },
