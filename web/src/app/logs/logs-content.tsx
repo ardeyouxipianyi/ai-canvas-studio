@@ -177,11 +177,18 @@ export function LogsContent() {
   }, [type, startDate, endDate]);
 
   return (
-    <section className="space-y-5">
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-        <div className="space-y-1">
-          <div className="text-xs font-semibold tracking-[0.18em] text-stone-500 uppercase">Logs</div>
-          <h1 className="text-2xl font-semibold tracking-tight">日志管理</h1>
+    <section className="space-y-4">
+      <div className="settings-module-toolbar">
+        <div className="flex flex-wrap items-center gap-2 text-xs text-stone-500">
+          <span className="rounded-full bg-white px-3 py-1 font-medium text-stone-700 ring-1 ring-stone-200">
+            日志 {logItems.length}
+          </span>
+          <span className="rounded-full bg-stone-100 px-3 py-1 font-medium text-stone-600">
+            当前类型 {isCallLog ? "调用日志" : "账号管理日志"}
+          </span>
+          <span className="rounded-full bg-stone-100 px-3 py-1 font-medium text-stone-600">
+            已选 {selectedIds.length}
+          </span>
         </div>
         <div className="flex flex-wrap gap-2">
           <Select value={type} onValueChange={setType}>

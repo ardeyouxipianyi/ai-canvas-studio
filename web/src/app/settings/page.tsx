@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AccountsPageContent } from "@/app/accounts/accounts-page-content";
 import { ImageManagerContent } from "@/app/image-manager/image-manager-content";
 import { LogsContent } from "@/app/logs/logs-content";
+import { cn } from "@/lib/utils";
 import { AdminPasswordCard } from "./components/admin-password-card";
 import { BackupSettingsCard } from "./components/backup-settings-card";
 import { ConfigCard } from "./components/config-card";
@@ -13,7 +14,6 @@ import { CPAPoolsCard } from "./components/cpa-pools-card";
 import { DataTransferCard } from "./components/data-transfer-card";
 import { ImportBrowserDialog } from "./components/import-browser-dialog";
 import { SettingsAdminFrame } from "./components/settings-admin-frame";
-import { SettingsHeader } from "./components/settings-header";
 import type { SettingsSectionId } from "./components/settings-section-shell";
 import { Sub2APIConnections } from "./components/sub2api-connections";
 import { UserKeysCard } from "./components/user-keys-card";
@@ -28,6 +28,10 @@ function normalizeSectionId(value: string | null | undefined): SettingsSectionId
 
 function sectionUrl(sectionId: SettingsSectionId) {
   return sectionId === "base" ? "/settings" : `/settings#${sectionId}`;
+}
+
+function paneClass(active: boolean) {
+  return cn("settings-section-pane", active ? "block" : "hidden");
 }
 
 function SettingsDataController() {
@@ -121,8 +125,7 @@ function SettingsPageContent() {
     <SettingsAdminFrame activeSectionId={activeSectionId} onSectionChange={handleSectionChange}>
       <SettingsDataController />
       {hasVisited.base ? (
-        <div className={activeSectionId === "base" ? "block" : "hidden"}>
-          <SettingsHeader />
+        <div className={paneClass(activeSectionId === "base")}>
           <section className="space-y-4">
             <ConfigCard />
             <AdminPasswordCard />
@@ -137,17 +140,17 @@ function SettingsPageContent() {
         </div>
       ) : null}
       {hasVisited.accounts ? (
-        <div className={activeSectionId === "accounts" ? "block" : "hidden"}>
+        <div className={paneClass(activeSectionId === "accounts")}>
           <AccountsPageContent />
         </div>
       ) : null}
       {hasVisited.images ? (
-        <div className={activeSectionId === "images" ? "block" : "hidden"}>
+        <div className={paneClass(activeSectionId === "images")}>
           <ImageManagerContent />
         </div>
       ) : null}
       {hasVisited.logs ? (
-        <div className={activeSectionId === "logs" ? "block" : "hidden"}>
+        <div className={paneClass(activeSectionId === "logs")}>
           <LogsContent />
         </div>
       ) : null}

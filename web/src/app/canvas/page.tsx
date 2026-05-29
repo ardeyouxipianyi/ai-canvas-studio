@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { BoxSelect, Columns2, Copy, Download, ImagePlus, LoaderCircle, LocateFixed, Maximize2, PanelLeft, PanelRight, Plus, RefreshCcw, Save, ScissorsLineDashed, Settings, Star, Trash2, Workflow, X, ZoomIn, ZoomOut } from "lucide-react";
+import { BoxSelect, Columns2, Copy, Download, ImagePlus, LoaderCircle, LocateFixed, Maximize2, MoreHorizontal, PanelLeft, PanelRight, Plus, RefreshCcw, Save, ScissorsLineDashed, Settings, Star, Trash2, Workflow, X, ZoomIn, ZoomOut } from "lucide-react";
 import { toast } from "sonner";
 
 import { ImageComposer } from "@/app/image/components/image-composer";
@@ -435,6 +435,26 @@ function getNodePreview(node: ImageCanvasNode) {
   return node.prompt || node.revised_prompt || node.error || node.size || getStatusLabel(node.status);
 }
 
+function getRelatedCanvasNodeIds(project: ImageCanvasProject, nodeId: string) {
+  const node = project.nodes.find((item) => item.id === nodeId);
+  if (!node) return [];
+  const ids = new Set<string>([node.id]);
+
+  if (node.type === "prompt" || node.type === "edit") {
+    project.edges
+      .filter((edge) => edge.from === node.id)
+      .forEach((edge) => ids.add(edge.to));
+    return Array.from(ids);
+  }
+
+  const parentId = node.sourceNodeId || project.edges.find((edge) => edge.to === node.id)?.from;
+  if (!parentId) return Array.from(ids);
+  project.nodes
+    .filter((item) => item.type === "image" && (item.sourceNodeId === parentId || project.edges.some((edge) => edge.from === parentId && edge.to === item.id)))
+    .forEach((item) => ids.add(item.id));
+  return Array.from(ids);
+}
+
 function getCanvasBounds(nodes: ImageCanvasNode[]) {
   if (nodes.length === 0) return null;
   const minX = Math.min(...nodes.map((node) => node.x));
@@ -523,6 +543,34 @@ function generationResultBaseX(origin: CanvasPlacement, count: number) {
 
 function generationResultY(origin: CanvasPlacement) {
   return origin.y + nodeSize.prompt.height + GENERATION_RESULT_Y_OFFSET;
+}
+
+function editBranchRects(origin: CanvasPlacement, count: number, referenceCount = 0): CanvasRect[] {
+  const uploadedGap = 32;
+  const resultGap = 32;
+  const referenceTotalWidth = referenceCount * nodeSize.image.width + Math.max(0, referenceCount - 1) * uploadedGap;
+  const referenceBaseX = origin.x + nodeSize.edit.width / 2 - referenceTotalWidth / 2;
+  const resultBaseX = origin.x - ((count - 1) * (nodeSize.image.width + resultGap)) / 2;
+  return [
+    ...Array.from({ length: referenceCount }, (_, index) => ({
+      x: referenceBaseX + index * (nodeSize.image.width + uploadedGap),
+      y: origin.y - nodeSize.image.height - 86,
+      width: nodeSize.image.width,
+      height: nodeSize.image.height,
+    })),
+    {
+      x: origin.x,
+      y: origin.y,
+      width: nodeSize.edit.width,
+      height: nodeSize.edit.height,
+    },
+    ...Array.from({ length: count }, (_, index) => ({
+      x: resultBaseX + index * (nodeSize.image.width + resultGap),
+      y: origin.y + nodeSize.edit.height + 86,
+      width: nodeSize.image.width,
+      height: nodeSize.image.height,
+    })),
+  ];
 }
 
 function viewportForBounds(bounds: NonNullable<ReturnType<typeof getCanvasBounds>>, viewportWidth: number, viewportHeight: number) {
@@ -825,7 +873,10 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [leftPanelOpen, setLeftPanelOpen] = useState(false);
   const [rightPanelOpen, setRightPanelOpen] = useState(false);
+  const [canvasMenuOpen, setCanvasMenuOpen] = useState(false);
   const [deleteProjectTarget, setDeleteProjectTarget] = useState<ImageCanvasProject | null>(null);
+  const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>([]);
+  const [deleteGroupDialogOpen, setDeleteGroupDialogOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [saveState, setSaveState] = useState<"saved" | "saving">("saved");
   const [promptDraft, setPromptDraft] = useState("");
@@ -853,6 +904,7 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
   );
   const successfulSelectedImage = selectedNode?.type === "image" && selectedNode.status === "success" ? selectedNode : null;
   const selectedEditNode = selectedNode?.type === "edit" ? selectedNode : null;
+  const selectedPromptNode = selectedNode?.type === "prompt" ? selectedNode : null;
   const runningCount = useMemo(
     () => activeProject?.nodes.filter((node) => node.type === "image" && (node.status === "queued" || node.status === "generating")).length ?? 0,
     [activeProject],
@@ -881,21 +933,16 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
   }, [activeProject]);
 
   useEffect(() => {
-    if (selectedNodeId) {
-      setRightPanelOpen(true);
-    }
-  }, [selectedNodeId]);
-
-  useEffect(() => {
-    if (!selectedEditNode) return;
-    setPromptDraft(selectedEditNode.prompt || "");
-    setCountDraft(String(Math.max(1, Number(selectedEditNode.count || 1) || 1)));
-    setSizeDraft(selectedEditNode.size || "");
+    const sourceNode = selectedEditNode || selectedPromptNode;
+    if (!sourceNode) return;
+    setPromptDraft(sourceNode.prompt || "");
+    setCountDraft(String(Math.max(1, Number(sourceNode.count || 1) || 1)));
+    setSizeDraft(sourceNode.size || "");
     setReferenceImages([]);
     if (composerFileInputRef.current) {
       composerFileInputRef.current.value = "";
     }
-  }, [selectedEditNode?.id]);
+  }, [selectedEditNode?.id, selectedPromptNode?.id]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1432,46 +1479,25 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
     const resultGap = 32;
     const selectedSource = successfulSelectedImage ? imageNodeToSource(successfulSelectedImage) : null;
     const uploadedTotalWidth = referenceImages.length * nodeSize.image.width + Math.max(0, referenceImages.length - 1) * uploadedGap;
-    const editPlacement = successfulSelectedImage
-      ? null
-      : findNonOverlappingCanvasPosition(
-          project.nodes,
-          { x: anchor.x - nodeSize.edit.width / 2, y: anchor.y - 44 },
-          (placement) => {
-            const referenceBaseX = placement.x + nodeSize.edit.width / 2 - uploadedTotalWidth / 2;
-            const resultBaseX = placement.x - ((count - 1) * (nodeSize.image.width + resultGap)) / 2;
-            return [
-              ...referenceImages.map((_, index) => ({
-                x: referenceBaseX + index * (nodeSize.image.width + uploadedGap),
-                y: placement.y - nodeSize.image.height - 96,
-                width: nodeSize.image.width,
-                height: nodeSize.image.height,
-              })),
-              {
-                x: placement.x,
-                y: placement.y,
-                width: nodeSize.edit.width,
-                height: nodeSize.edit.height,
-              },
-              ...Array.from({ length: count }, (_, index) => ({
-                x: resultBaseX + index * (nodeSize.image.width + resultGap),
-                y: placement.y + nodeSize.edit.height + 86,
-                width: nodeSize.image.width,
-                height: nodeSize.image.height,
-              })),
-            ];
-          },
-        );
+    const initialEditPlacement = successfulSelectedImage
+      ? {
+          x: successfulSelectedImage.x + successfulSelectedImage.width / 2 - nodeSize.edit.width / 2,
+          y: successfulSelectedImage.y + successfulSelectedImage.height + (referenceImages.length > 0 ? nodeSize.image.height + 180 : 96),
+        }
+      : { x: anchor.x - nodeSize.edit.width / 2, y: anchor.y - 44 };
+    const editPlacement = findNonOverlappingCanvasPosition(
+      project.nodes,
+      initialEditPlacement,
+      (placement) => editBranchRects(placement, count, referenceImages.length),
+    );
     const uploadedReferenceNodes: ImageCanvasNode[] = referenceImages.map((image, index) => {
       const id = createImageCanvasId();
-      const baseX = successfulSelectedImage
-        ? successfulSelectedImage.x + successfulSelectedImage.width + 52
-        : (editPlacement?.x ?? anchor.x) + nodeSize.edit.width / 2 - uploadedTotalWidth / 2;
+      const baseX = editPlacement.x + nodeSize.edit.width / 2 - uploadedTotalWidth / 2;
       return {
         id,
         type: "image",
         x: baseX + index * (nodeSize.image.width + uploadedGap),
-        y: successfulSelectedImage ? successfulSelectedImage.y : (editPlacement?.y ?? anchor.y) - nodeSize.image.height - 96,
+        y: editPlacement.y - nodeSize.image.height - 86,
         ...nodeSize.image,
         title: referenceImages.length > 1 ? `参考图 ${index + 1}` : "参考图",
         prompt,
@@ -1487,13 +1513,12 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
       ...(successfulSelectedImage ? [successfulSelectedImage] : []),
       ...uploadedReferenceNodes,
     ];
-    const sourceBounds = getCanvasBounds(visualSourceNodes);
     const editNodeId = createImageCanvasId();
     const editNode: ImageCanvasNode = {
       id: editNodeId,
       type: "edit",
-      x: sourceBounds ? sourceBounds.minX + sourceBounds.width / 2 - nodeSize.edit.width / 2 : anchor.x - nodeSize.edit.width / 2,
-      y: sourceBounds ? sourceBounds.maxY + 96 : anchor.y,
+      x: editPlacement.x,
+      y: editPlacement.y,
       ...nodeSize.edit,
       title: "编辑要求",
       prompt,
@@ -1571,6 +1596,111 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
     })();
   }, [clearComposerInputs, countDraft, getCanvasPoint, loadQuota, patchImageNode, persistProject, promptDraft, referenceImages, sizeDraft, successfulSelectedImage, syncImageTasks]);
 
+  const copySelectedPromptNodeRevision = useCallback(async () => {
+    if (!selectedPromptNode) return;
+    const prompt = promptDraft.trim();
+    if (!prompt) {
+      toast.error("请输入提示词");
+      return;
+    }
+    const project = activeProjectRef.current;
+    if (!project) return;
+
+    const now = new Date().toISOString();
+    const count = Number(clampCount(countDraft));
+    const existingChildren = project.edges
+      .filter((edge) => edge.from === selectedPromptNode.id)
+      .map((edge) => project.nodes.find((node) => node.id === edge.to))
+      .filter((node): node is ImageCanvasNode => Boolean(node));
+    const existingBranchBounds = getCanvasBounds([selectedPromptNode, ...existingChildren]) || {
+      minX: selectedPromptNode.x,
+      minY: selectedPromptNode.y,
+      maxX: selectedPromptNode.x + selectedPromptNode.width,
+      maxY: selectedPromptNode.y + selectedPromptNode.height,
+      width: selectedPromptNode.width,
+      height: selectedPromptNode.height,
+    };
+
+    const copiedPromptPlacement = findNonOverlappingCanvasPosition(
+      project.nodes,
+      { x: existingBranchBounds.maxX + 96, y: selectedPromptNode.y },
+      (placement) => generationBranchRects(placement, count),
+    );
+    const copiedPromptNodeId = createImageCanvasId();
+    const copiedPromptNode: ImageCanvasNode = {
+      ...selectedPromptNode,
+      id: copiedPromptNodeId,
+      x: copiedPromptPlacement.x,
+      y: copiedPromptPlacement.y,
+      title: selectedPromptNode.title.endsWith("副本") ? selectedPromptNode.title : `${selectedPromptNode.title} 副本`,
+      prompt,
+      size: sizeDraft,
+      count,
+      status: "idle",
+      taskId: undefined,
+      progress: undefined,
+      progressMessage: undefined,
+      error: undefined,
+      createdAt: now,
+      updatedAt: now,
+    };
+    const resultBaseX = generationResultBaseX(copiedPromptNode, count);
+    const resultY = generationResultY(copiedPromptNode);
+    const resultNodes: ImageCanvasNode[] = Array.from({ length: count }, (_, index) => {
+      const resultNodeId = createImageCanvasId();
+      return {
+        id: resultNodeId,
+        type: "image",
+        x: resultBaseX + index * (nodeSize.image.width + GENERATION_RESULT_GAP),
+        y: resultY,
+        ...nodeSize.image,
+        title: count > 1 ? `生成结果 ${index + 1}` : "生成结果",
+        prompt,
+        model: copiedPromptNode.model || "gpt-image-2",
+        size: sizeDraft,
+        sourceNodeId: copiedPromptNodeId,
+        taskId: resultNodeId,
+        status: "queued",
+        progress: 0,
+        progressMessage: "排队中",
+        createdAt: now,
+        updatedAt: now,
+      };
+    });
+
+    await persistProject({
+      ...project,
+      nodes: [...project.nodes, copiedPromptNode, ...resultNodes],
+      edges: [
+        ...project.edges,
+        ...resultNodes.map((node) => ({ id: createImageCanvasId(), from: copiedPromptNodeId, to: node.id })),
+      ],
+    });
+    setSelectedNodeId(resultNodes[0]?.id ?? copiedPromptNodeId);
+    clearComposerInputs();
+    toast.success(count > 1 ? `已复制提示词节点并生成 ${count} 张新结果` : "已复制提示词节点并生成新结果");
+
+    void (async () => {
+      await Promise.all(
+        resultNodes.map(async (node) => {
+          try {
+            const task = await createImageGenerationTask(node.id, prompt, copiedPromptNode.model || "gpt-image-2", sizeDraft);
+            await patchImageNode(node.id, taskToImageNode(node, task));
+          } catch (error) {
+            await patchImageNode(node.id, {
+              status: "error",
+              progress: 100,
+              progressMessage: "失败",
+              error: error instanceof Error ? error.message : "创建图片任务失败",
+            });
+          }
+        }),
+      );
+      void syncImageTasks();
+      void loadQuota();
+    })();
+  }, [clearComposerInputs, countDraft, loadQuota, patchImageNode, persistProject, promptDraft, selectedPromptNode, sizeDraft, syncImageTasks]);
+
   const copySelectedEditNodeRevision = useCallback(async () => {
     if (!selectedEditNode) return;
     const prompt = promptDraft.trim();
@@ -1610,12 +1740,17 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
       width: selectedEditNode.width,
       height: selectedEditNode.height,
     };
+    const copiedEditPlacement = findNonOverlappingCanvasPosition(
+      project.nodes,
+      { x: existingBranchBounds.maxX + 96, y: selectedEditNode.y },
+      (placement) => editBranchRects(placement, count, referenceImages.length),
+    );
     const copiedEditNodeId = createImageCanvasId();
     const copiedEditNode: ImageCanvasNode = {
       ...selectedEditNode,
       id: copiedEditNodeId,
-      x: existingBranchBounds.maxX + 96,
-      y: selectedEditNode.y,
+      x: copiedEditPlacement.x,
+      y: copiedEditPlacement.y,
       title: selectedEditNode.title.endsWith("副本") ? selectedEditNode.title : `${selectedEditNode.title} 副本`,
       prompt,
       size: sizeDraft,
@@ -1718,15 +1853,20 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
       await copySelectedEditNodeRevision();
       return;
     }
+    if (selectedPromptNode) {
+      await copySelectedPromptNodeRevision();
+      return;
+    }
     if (successfulSelectedImage || referenceImages.length > 0) {
       await createEditBranch();
       return;
     }
     await createGenerationNodes();
-  }, [copySelectedEditNodeRevision, createEditBranch, createGenerationNodes, referenceImages.length, selectedEditNode, successfulSelectedImage]);
+  }, [copySelectedEditNodeRevision, copySelectedPromptNodeRevision, createEditBranch, createGenerationNodes, referenceImages.length, selectedEditNode, selectedPromptNode, successfulSelectedImage]);
 
   const clearEditSelection = useCallback(() => {
     setSelectedNodeId(null);
+    setSelectedGroupIds([]);
     clearComposerInputs();
   }, [clearComposerInputs]);
 
@@ -1840,12 +1980,36 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
     }));
     setSelectedNodeId((current) => (current === nodeId ? null : current));
     setCompareNodeIds((current) => current.filter((id) => id !== nodeId));
+    setSelectedGroupIds((current) => current.filter((id) => id !== nodeId));
   }, [updateActiveProject]);
 
   const deleteSelectedNode = useCallback(async () => {
     if (!selectedNode) return;
     await deleteNode(selectedNode.id);
   }, [deleteNode, selectedNode]);
+
+  const deleteNodeGroup = useCallback(async (nodeIds: string[]) => {
+    const idSet = new Set(nodeIds);
+    if (idSet.size === 0) return;
+    await updateActiveProject((project) => ({
+      ...project,
+      nodes: project.nodes.filter((item) => !idSet.has(item.id)),
+      edges: project.edges.filter((edge) => !idSet.has(edge.from) && !idSet.has(edge.to)),
+    }));
+    setSelectedNodeId((current) => (current && idSet.has(current) ? null : current));
+    setCompareNodeIds((current) => current.filter((id) => !idSet.has(id)));
+    setSelectedGroupIds([]);
+    setDeleteGroupDialogOpen(false);
+  }, [updateActiveProject]);
+
+  const selectRelatedNodeGroup = useCallback((node: ImageCanvasNode) => {
+    const project = activeProjectRef.current;
+    if (!project) return;
+    const ids = getRelatedCanvasNodeIds(project, node.id);
+    setSelectedNodeId(node.id);
+    setSelectedGroupIds(ids);
+    toast.success(ids.length > 1 ? `已选中 ${ids.length} 个相关节点` : "已选中当前节点");
+  }, []);
 
   const copyImageNode = useCallback(
     async (node: ImageCanvasNode) => {
@@ -1978,10 +2142,19 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
     await updateViewport(viewportForBounds(bounds, rect.width, rect.height));
   }, [updateViewport]);
 
-  const focusSelectedNode = useCallback(async () => {
-    if (!selectedNodeId) return;
-    await focusCanvasNode(selectedNodeId);
-  }, [focusCanvasNode, selectedNodeId]);
+  const focusAllNodesCenter = useCallback(async () => {
+    const project = activeProjectRef.current;
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!project || !rect) return;
+    const bounds = getCanvasBounds(project.nodes);
+    if (!bounds) return;
+    const zoom = clamp(project.viewport.zoom, 0.35, 1.8);
+    await updateViewport({
+      x: rect.width / 2 - (bounds.minX + bounds.width / 2) * zoom,
+      y: rect.height / 2 - (bounds.minY + bounds.height / 2) * zoom,
+      zoom,
+    });
+  }, [updateViewport]);
 
   const tidyCanvasLayout = useCallback(async () => {
     const project = activeProjectRef.current;
@@ -2026,7 +2199,8 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
       const project = activeProjectRef.current;
       if (!project) return;
       setSelectedNodeId(null);
-      if (selectedEditNode) {
+      setSelectedGroupIds([]);
+      if (selectedEditNode || selectedPromptNode) {
         clearComposerInputs();
       }
       event.currentTarget.setPointerCapture(event.pointerId);
@@ -2037,7 +2211,7 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
         baseViewport: project.viewport,
       };
     },
-    [clearComposerInputs, selectedEditNode],
+    [clearComposerInputs, selectedEditNode, selectedPromptNode],
   );
 
   const handleNodePointerDown = useCallback((event: ReactPointerEvent<HTMLElement>, node: ImageCanvasNode) => {
@@ -2054,6 +2228,7 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
       zoom,
     };
     setSelectedNodeId(node.id);
+    setSelectedGroupIds([]);
   }, []);
 
   const handlePointerMove = useCallback(
@@ -2115,6 +2290,30 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
     [updateViewport],
   );
 
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const isTyping = Boolean(target?.closest("input, textarea, [contenteditable='true']"));
+      if (isTyping) return;
+      if (event.key === "Escape" && selectedGroupIds.length > 0) {
+        event.preventDefault();
+        setSelectedGroupIds([]);
+        setDeleteGroupDialogOpen(false);
+        return;
+      }
+      if ((event.key === "Delete" || event.key === "Backspace") && selectedGroupIds.length > 0) {
+        event.preventDefault();
+        if (selectedGroupIds.length === 1) {
+          void deleteNodeGroup(selectedGroupIds);
+          return;
+        }
+        setDeleteGroupDialogOpen(true);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [deleteNodeGroup, selectedGroupIds]);
+
   if (isLoading) {
     return (
       <div className="fixed inset-0 z-40 flex h-[100dvh] w-screen items-center justify-center bg-[#f7f6f2]">
@@ -2130,6 +2329,7 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
   const nodeMap = new Map(activeProject.nodes.map((node) => [node.id, node]));
   const upstreamHighlight = getSelectedUpstreamHighlight(activeProject, selectedNodeId);
   const canvasNodeList = [...activeProject.nodes].sort((a, b) => Number(Boolean(b.favorite)) - Number(Boolean(a.favorite)) || a.y - b.y || a.x - b.x);
+  const selectedGroupSet = new Set(selectedGroupIds);
 
   return (
     <>
@@ -2155,6 +2355,55 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
           </div>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto pb-4">
+          <div className="mb-2 flex items-center justify-between gap-2 px-1">
+            <div className="text-xs font-semibold text-stone-500">画布列表</div>
+            <span className="rounded-full bg-stone-100 px-2 py-0.5 text-[11px] text-stone-500">{projects.length}</span>
+          </div>
+          <div className="mb-4 space-y-2">
+            {projects.map((project) => (
+              <div
+                key={project.id}
+                className={cn(
+                  "group flex w-full items-center gap-2 rounded-2xl border px-3 py-3 text-left transition",
+                  project.id === activeProject.id
+                    ? "border-stone-900 bg-stone-950 text-white"
+                    : "border-stone-200 bg-white text-stone-700 hover:border-stone-300",
+                )}
+              >
+                <button
+                  type="button"
+                  className="min-w-0 flex-1 text-left"
+                  onClick={() => {
+                    setActiveProjectId(project.id);
+                    setSelectedNodeId(null);
+                  }}
+                >
+                  <span className="block truncate text-sm font-semibold">{project.title}</span>
+                  <span className={cn("mt-1 block text-xs", project.id === activeProject.id ? "text-stone-300" : "text-stone-400")}>
+                    {project.nodes.length} 节点 · {formatTime(project.updatedAt)}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  className={cn(
+                    "inline-flex size-8 shrink-0 items-center justify-center rounded-xl transition",
+                    project.id === activeProject.id
+                      ? "text-stone-300 hover:bg-white/10 hover:text-white"
+                      : "text-stone-400 hover:bg-rose-50 hover:text-rose-600",
+                  )}
+                  aria-label={`删除画布 ${project.title}`}
+                  title="删除画布"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setDeleteProjectTarget(project);
+                  }}
+                >
+                  <Trash2 className="size-4" />
+                </button>
+              </div>
+            ))}
+          </div>
+
           <div className="rounded-2xl border border-stone-200 bg-white p-3 shadow-sm">
             <input
               ref={reversePromptFileInputRef}
@@ -2308,113 +2557,144 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
             </div>
           </div>
 
-          <div className="mb-2 mt-4 flex items-center justify-between gap-2 px-1">
-            <div className="text-xs font-semibold text-stone-500">画布列表</div>
-            <span className="rounded-full bg-stone-100 px-2 py-0.5 text-[11px] text-stone-500">{projects.length}</span>
-          </div>
-          <div className="space-y-2">
-            {projects.map((project) => (
-              <div
-                key={project.id}
-                className={cn(
-                  "group flex w-full items-center gap-2 rounded-2xl border px-3 py-3 text-left transition",
-                  project.id === activeProject.id
-                    ? "border-stone-900 bg-stone-950 text-white"
-                    : "border-stone-200 bg-white text-stone-700 hover:border-stone-300",
-                )}
-              >
-                <button
-                  type="button"
-                  className="min-w-0 flex-1 text-left"
-                  onClick={() => {
-                    setActiveProjectId(project.id);
-                    setSelectedNodeId(null);
-                  }}
-                >
-                <span className="block truncate text-sm font-semibold">{project.title}</span>
-                <span className={cn("mt-1 block text-xs", project.id === activeProject.id ? "text-stone-300" : "text-stone-400")}>
-                  {project.nodes.length} 节点 · {formatTime(project.updatedAt)}
-                </span>
-                </button>
-                <button
-                  type="button"
-                  className={cn(
-                    "inline-flex size-8 shrink-0 items-center justify-center rounded-xl transition",
-                    project.id === activeProject.id
-                      ? "text-stone-300 hover:bg-white/10 hover:text-white"
-                      : "text-stone-400 hover:bg-rose-50 hover:text-rose-600",
-                  )}
-                  aria-label={`删除画布 ${project.title}`}
-                  title="删除画布"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    setDeleteProjectTarget(project);
-                  }}
-                >
-                  <Trash2 className="size-4" />
-                </button>
-              </div>
-            ))}
-          </div>
         </div>
       </aside>
 
       <main className="absolute inset-0 isolate overflow-hidden bg-[#f7f6f2]">
         <div className="pointer-events-none absolute inset-0 z-0 opacity-80 [background-image:linear-gradient(rgba(68,64,60,0.08)_1px,transparent_1px),linear-gradient(90deg,rgba(68,64,60,0.08)_1px,transparent_1px)] [background-size:28px_28px]" />
-        <div className="hide-scrollbar absolute inset-x-3 top-3 z-40 flex flex-nowrap items-center gap-2 overflow-x-auto pb-1">
-          <div className="flex h-9 shrink-0 items-center gap-2 rounded-full border border-stone-200 bg-white/95 px-3 text-xs font-medium text-stone-700 shadow-sm backdrop-blur">
-            <span className="font-semibold text-stone-950">画布工作台</span>
-            <span className="hidden text-stone-300 sm:inline">/</span>
-            <span className="hidden max-w-[180px] truncate sm:inline">{activeProject.title}</span>
-            <span className="text-stone-300">·</span>
-            <span>{saveState === "saving" ? "保存中" : "已保存"}</span>
-            <span className={cn("rounded-full px-2 py-0.5", runningCount > 0 ? "bg-amber-50 text-amber-700" : "bg-stone-100 text-stone-500")}>
-              {runningCount}
-            </span>
+        <div className="absolute inset-x-3 top-3 z-40 flex items-start justify-between gap-3">
+          <div className="min-w-0 rounded-2xl border border-stone-200 bg-white/95 px-3 py-2 text-xs font-medium text-stone-700 shadow-sm backdrop-blur">
+            <div className="flex min-w-0 items-center gap-2">
+              <span className="shrink-0 font-semibold text-stone-950">画布工作台</span>
+              <span className="hidden text-stone-300 sm:inline">/</span>
+              <span className="min-w-0 max-w-[240px] truncate text-stone-600">{activeProject.title}</span>
+              <button
+                type="button"
+                className="inline-flex size-6 shrink-0 items-center justify-center rounded-full bg-stone-950 text-white transition hover:bg-stone-800"
+                onClick={() => void createProject()}
+                title="新增画布"
+                aria-label="新增画布"
+              >
+                <Plus className="size-3.5" />
+              </button>
+            </div>
+            <div className="mt-1 flex items-center gap-2 text-[11px] text-stone-400">
+              <span>{saveState === "saving" ? "保存中" : "已保存"}</span>
+              <span>·</span>
+              <span>{activeProject.nodes.length} 节点</span>
+              {runningCount > 0 ? (
+                <>
+                  <span>·</span>
+                  <span className="text-amber-700">{runningCount} 个任务</span>
+                </>
+              ) : null}
+            </div>
           </div>
-          <Button variant="outline" className={cn("h-9 rounded-full border-stone-200 bg-white/95 px-3 backdrop-blur", leftPanelOpen && "border-stone-900 text-stone-950")} onClick={() => setLeftPanelOpen((open) => !open)}>
-            <PanelLeft className="size-4" />
-            <span className="hidden sm:inline">项目</span>
-          </Button>
-          <Button variant="outline" className={cn("h-9 rounded-full border-stone-200 bg-white/95 px-3 backdrop-blur", rightPanelOpen && "border-stone-900 text-stone-950")} onClick={() => setRightPanelOpen((open) => !open)}>
-            <PanelRight className="size-4" />
-            <span className="hidden sm:inline">节点</span>
-          </Button>
-          <Button variant="outline" className="h-9 rounded-full border-stone-200 bg-white/95 px-3 backdrop-blur" onClick={() => void persistProject(activeProject)}>
-            <Save className="size-4" />
-            <span className="hidden sm:inline">保存</span>
-          </Button>
-          <Button variant="outline" className="h-9 rounded-full border-stone-200 bg-white/95 px-3 backdrop-blur" onClick={exportActiveProject} disabled={activeProject.nodes.length === 0}>
-            <Download className="size-4" />
-            <span className="hidden sm:inline">导出</span>
-          </Button>
-          <Button variant="outline" className="h-9 rounded-full border-stone-200 bg-white/95 px-3 backdrop-blur" onClick={() => void tidyCanvasLayout()} disabled={activeProject.nodes.length === 0}>
-            <Workflow className="size-4" />
-            <span className="hidden sm:inline">整理</span>
-          </Button>
-          <Button variant="outline" className="h-9 rounded-full border-stone-200 bg-white/95 px-3 backdrop-blur" onClick={() => void fitCanvasToNodes()} disabled={activeProject.nodes.length === 0}>
-            <Maximize2 className="size-4" />
-            <span className="hidden sm:inline">适配</span>
-          </Button>
-          <Button variant="outline" className="h-9 rounded-full border-stone-200 bg-white/95 px-3 backdrop-blur" onClick={() => void focusSelectedNode()} disabled={!selectedNode}>
-            <LocateFixed className="size-4" />
-            <span className="hidden sm:inline">定位</span>
-          </Button>
-          <Button variant="outline" className="h-9 rounded-full border-stone-200 bg-white/95 px-3 backdrop-blur" onClick={() => zoomBy(-0.12)} title="缩小">
-            <ZoomOut className="size-4" />
-          </Button>
-          <Button variant="outline" className="h-9 rounded-full border-stone-200 bg-white/95 px-3 backdrop-blur" onClick={() => zoomBy(0.12)} title="放大">
-            <ZoomIn className="size-4" />
-          </Button>
-          {isAdmin ? (
-            <Button asChild variant="outline" className="h-9 rounded-full border-stone-200 bg-white/95 px-3 backdrop-blur">
-              <a href="/settings">
-                <Settings className="size-4" />
-                <span className="hidden sm:inline">设置</span>
-              </a>
+
+          <div className="flex shrink-0 flex-wrap justify-end gap-2">
+            <Button variant="outline" className={cn("h-9 rounded-full border-stone-200 bg-white/95 px-3 backdrop-blur", leftPanelOpen && "border-stone-900 text-stone-950")} onClick={() => setLeftPanelOpen((open) => !open)}>
+              <PanelLeft className="size-4" />
+              <span className="hidden md:inline">项目</span>
             </Button>
-          ) : null}
+            <Button variant="outline" className={cn("h-9 rounded-full border-stone-200 bg-white/95 px-3 backdrop-blur", rightPanelOpen && "border-stone-900 text-stone-950")} onClick={() => setRightPanelOpen((open) => !open)}>
+              <PanelRight className="size-4" />
+              <span className="hidden md:inline">节点</span>
+            </Button>
+            <Button variant="outline" className="h-9 rounded-full border-stone-200 bg-white/95 px-3 backdrop-blur" onClick={() => void tidyCanvasLayout()} disabled={activeProject.nodes.length === 0}>
+              <Workflow className="size-4" />
+              <span className="hidden lg:inline">整理</span>
+            </Button>
+            <Button variant="outline" className="h-9 rounded-full border-stone-200 bg-white/95 px-3 backdrop-blur" onClick={() => void fitCanvasToNodes()} disabled={activeProject.nodes.length === 0}>
+              <Maximize2 className="size-4" />
+              <span className="hidden lg:inline">适配</span>
+            </Button>
+            <Button variant="outline" className="h-9 rounded-full border-stone-200 bg-white/95 px-3 backdrop-blur" onClick={() => void focusAllNodesCenter()} disabled={activeProject.nodes.length === 0} title="定位到全部节点中心">
+              <LocateFixed className="size-4" />
+              <span className="hidden xl:inline">定位</span>
+            </Button>
+            {isAdmin ? (
+              <Button asChild variant="outline" className="h-9 rounded-full border-stone-200 bg-white/95 px-3 backdrop-blur" title="设置">
+                <a href="/settings" aria-label="设置">
+                  <Settings className="size-4" />
+                </a>
+              </Button>
+            ) : null}
+            <div className="relative">
+              <Button
+                variant="outline"
+                className={cn("h-9 rounded-full border-stone-200 bg-white/95 px-3 backdrop-blur", canvasMenuOpen && "border-stone-900 text-stone-950")}
+                aria-label="更多画布操作"
+                onClick={() => setCanvasMenuOpen((open) => !open)}
+              >
+                <MoreHorizontal className="size-4" />
+              </Button>
+              {canvasMenuOpen ? (
+                <div className="absolute right-0 top-11 z-50 w-52 rounded-2xl border border-stone-200 bg-white/95 p-2 shadow-xl backdrop-blur">
+                  <div className="space-y-1">
+                    <Button
+                      variant="ghost"
+                      className="h-9 w-full justify-start rounded-xl px-3 text-stone-700"
+                      onClick={() => {
+                        setCanvasMenuOpen(false);
+                        void persistProject(activeProject);
+                      }}
+                    >
+                      <Save className="size-4" />
+                      保存画布
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      className="h-9 w-full justify-start rounded-xl px-3 text-stone-700"
+                      onClick={() => {
+                        setCanvasMenuOpen(false);
+                        exportActiveProject();
+                      }}
+                      disabled={activeProject.nodes.length === 0}
+                    >
+                      <Download className="size-4" />
+                      导出画布
+                    </Button>
+                    <div className="my-1 h-px bg-stone-100" />
+                    <div className="grid grid-cols-2 gap-1">
+                      <Button variant="ghost" className="h-9 rounded-xl px-3 text-stone-700" onClick={() => zoomBy(-0.12)} title="缩小">
+                        <ZoomOut className="size-4" />
+                        缩小
+                      </Button>
+                      <Button variant="ghost" className="h-9 rounded-xl px-3 text-stone-700" onClick={() => zoomBy(0.12)} title="放大">
+                        <ZoomIn className="size-4" />
+                        放大
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          </div>
         </div>
+
+        {selectedGroupIds.length > 0 ? (
+          <div className="pointer-events-auto absolute left-1/2 top-16 z-50 flex -translate-x-1/2 items-center gap-2 rounded-full border border-rose-200 bg-white/95 px-3 py-2 text-xs font-medium text-rose-700 shadow-lg backdrop-blur">
+            <span>已选中 {selectedGroupIds.length} 个相关节点</span>
+            <span className="hidden text-rose-300 sm:inline">·</span>
+            <span className="hidden sm:inline">Delete 删除，Esc 取消</span>
+            <Button
+              type="button"
+              variant="ghost"
+              className="h-6 rounded-full px-2 text-xs text-rose-700 hover:bg-rose-50"
+              onClick={() => selectedGroupIds.length === 1 ? void deleteNodeGroup(selectedGroupIds) : setDeleteGroupDialogOpen(true)}
+            >
+              删除
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              className="h-6 rounded-full px-2 text-xs text-stone-500 hover:bg-stone-100"
+              onClick={() => setSelectedGroupIds([])}
+            >
+              取消
+            </Button>
+          </div>
+        ) : null}
 
         <div className="pointer-events-auto absolute inset-x-3 bottom-3 z-50">
           {selectedEditNode ? (
@@ -2423,6 +2703,17 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
               <button
                 type="button"
                 className="shrink-0 rounded-full px-2 py-1 text-amber-700 transition hover:bg-white hover:text-amber-950"
+                onClick={clearEditSelection}
+              >
+                取消选择
+              </button>
+            </div>
+          ) : selectedPromptNode ? (
+            <div className="mx-auto mb-2 flex w-[min(980px,100%)] items-center justify-between gap-2 rounded-2xl border border-sky-200 bg-sky-50/95 px-3 py-2 text-xs text-sky-800 shadow-sm">
+              <span className="min-w-0 truncate">正在修改这个提示词节点，提交后会复制节点并在副本下方生成新结果</span>
+              <button
+                type="button"
+                className="shrink-0 rounded-full px-2 py-1 text-sky-700 transition hover:bg-white hover:text-sky-950"
                 onClick={clearEditSelection}
               >
                 取消选择
@@ -2459,11 +2750,13 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
             placeholder={
               selectedEditNode
                 ? "修改这个编辑要求，提交后会复制节点并基于同一批上游图片生成结果"
+                : selectedPromptNode
+                  ? "修改这个提示词，提交后会复制提示词节点并生成新的图片结果"
                 : successfulSelectedImage || referenceImages.length > 0
                   ? "描述你希望如何修改参考图"
                   : "输入你想要生成的画面，也可直接粘贴图片"
             }
-            submitAriaLabel={selectedEditNode ? "复制编辑节点并生成结果" : successfulSelectedImage || referenceImages.length > 0 ? "编辑图片" : "生成图片"}
+            submitAriaLabel={selectedEditNode ? "复制编辑节点并生成结果" : selectedPromptNode ? "复制提示词节点并生成结果" : successfulSelectedImage || referenceImages.length > 0 ? "编辑图片" : "生成图片"}
           />
         </div>
 
@@ -2520,6 +2813,7 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
               const nodeProgress = getNodeProgress(node);
               const nodeProgressMessage = node.progressMessage || getStatusLabel(node.status);
               const isSelected = node.id === selectedNodeId;
+              const isGroupSelected = selectedGroupSet.has(node.id);
               const isSelectedImageNode = isSelected && node.type === "image";
               const isCompareSelected = compareNodeIds.includes(node.id);
               const upstreamColor = isSelected ? undefined : upstreamHighlight.nodeColors.get(node.id);
@@ -2531,6 +2825,8 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
                     "absolute overflow-hidden rounded-[20px] border bg-white shadow-[0_18px_70px_-44px_rgba(15,23,42,0.55)] transition",
                     isSelectedImageNode
                       ? "border-blue-500 ring-4 ring-blue-500/25 shadow-[0_24px_90px_-36px_rgba(37,99,235,0.55)]"
+                      : isGroupSelected
+                        ? "border-rose-500 ring-4 ring-rose-500/20 shadow-[0_24px_90px_-36px_rgba(244,63,94,0.35)]"
                       : isSelected
                         ? "border-stone-950 ring-4 ring-stone-950/10"
                         : "border-stone-200",
@@ -2551,6 +2847,11 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
                   onClick={(event) => {
                     event.stopPropagation();
                     setSelectedNodeId(node.id);
+                    setSelectedGroupIds([]);
+                  }}
+                  onDoubleClick={(event) => {
+                    event.stopPropagation();
+                    selectRelatedNodeGroup(node);
                   }}
                   onPointerMove={handlePointerMove}
                   onPointerUp={handlePointerUp}
@@ -2734,6 +3035,66 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
 
         <div className="min-h-0 flex-1 overflow-y-auto py-3">
           {selectedNode ? (
+            <div className="rounded-2xl border border-stone-200 bg-stone-50 p-3">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-semibold text-stone-900">{selectedNode.title}</div>
+                  <div className="mt-1 text-xs text-stone-500">{selectedNode.type === "image" ? "图片节点" : selectedNode.type === "edit" ? "编辑节点" : "提示词节点"}</div>
+                </div>
+                <span className={cn("shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-medium", nodeStatusClass(selectedNode.status))}>
+                  {getStatusLabel(selectedNode.status)}
+                </span>
+              </div>
+              {selectedNode.prompt ? <p className="mt-2 line-clamp-3 whitespace-pre-wrap text-xs leading-5 text-stone-500">{selectedNode.prompt}</p> : null}
+            </div>
+          ) : null}
+
+          {canvasNodeList.length > 0 ? (
+            <div className={cn("rounded-2xl border border-stone-200 bg-white p-3", selectedNode ? "mt-3" : "")}>
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <div className="text-sm font-semibold text-stone-900">节点导航</div>
+                <span className="rounded-full bg-stone-100 px-2 py-0.5 text-[11px] text-stone-500">{canvasNodeList.length}</span>
+              </div>
+              <div className="max-h-[calc(100dvh-12rem)] space-y-1 overflow-y-auto pr-1">
+                {canvasNodeList.map((node) => (
+                  <button
+                    key={node.id}
+                    type="button"
+                    className={cn(
+                      "flex w-full items-center gap-2 rounded-xl border px-2.5 py-2 text-left transition",
+                      node.id === selectedNodeId
+                        ? "border-stone-900 bg-stone-950 text-white"
+                        : "border-transparent bg-stone-50 text-stone-700 hover:border-stone-200 hover:bg-white",
+                    )}
+                    onClick={() => void focusCanvasNode(node.id)}
+                  >
+                    <span className={cn("flex size-7 shrink-0 items-center justify-center rounded-lg", node.id === selectedNodeId ? "bg-white/12" : "bg-white")}>
+                      {node.type === "prompt" ? <BoxSelect className="size-3.5" /> : node.type === "edit" ? <ScissorsLineDashed className="size-3.5" /> : <ImagePlus className="size-3.5" />}
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="flex min-w-0 items-center gap-1.5">
+                        <span className="truncate text-xs font-semibold">{node.title}</span>
+                        {node.favorite ? <Star className={cn("size-3 shrink-0 fill-current", node.id === selectedNodeId ? "text-amber-300" : "text-amber-500")} /> : null}
+                        <span className={cn("shrink-0 text-[10px]", node.id === selectedNodeId ? "text-stone-300" : "text-stone-400")}>{getNodeTypeLabel(node.type)}</span>
+                      </span>
+                      <span className={cn("mt-0.5 block truncate text-[11px]", node.id === selectedNodeId ? "text-stone-300" : "text-stone-400")}>
+                        {getNodePreview(node)}
+                      </span>
+                    </span>
+                    <span className={cn("shrink-0 rounded-full px-1.5 py-0.5 text-[10px]", node.id === selectedNodeId ? "bg-white/12 text-stone-200" : "bg-white text-stone-500")}>
+                      {getStatusLabel(node.status)}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div className="rounded-2xl border border-stone-200 bg-stone-50 px-4 py-5 text-sm leading-6 text-stone-500">
+              当前画布还没有节点。
+            </div>
+          )}
+          {/*
+          {false && selectedNode ? (
             <div className="space-y-4">
               <div className="rounded-2xl border border-stone-200 bg-white p-4">
                 <div className="flex items-start justify-between gap-3">
@@ -2751,6 +3112,8 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
               <div className="rounded-2xl border border-stone-200 bg-stone-50 px-4 py-4 text-sm leading-6 text-stone-500">
                 {selectedEditNode
                   ? "已选中编辑要求节点。底部可以改提示词、张数和比例，提交后会复制这个编辑节点，保留上游图片并生成新的结果。"
+                  : selectedPromptNode
+                    ? "已选中提示词节点。底部可以改提示词、张数和比例，提交后会复制这个提示词节点并生成新的文生图结果。"
                   : successfulSelectedImage
                     ? "已选中这张图。直接在底部输入框写编辑要求，就会在这张图下方生成新的分支。"
                     : "选中一张已完成的图片后，底部输入框会切换为继续编辑模式。"}
@@ -2819,6 +3182,7 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
               </div>
             </div>
           ) : null}
+          */}
         </div>
       </aside>
     </section>
@@ -2866,6 +3230,25 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
         <DialogFooter className="border-t border-stone-200 px-5 py-4">
           <Button variant="outline" onClick={() => setCompareNodeIds([])}>
             关闭
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    <Dialog open={deleteGroupDialogOpen} onOpenChange={setDeleteGroupDialogOpen}>
+      <DialogContent showCloseButton={false} className="rounded-2xl p-6">
+        <DialogHeader className="gap-2">
+          <DialogTitle>删除相关节点</DialogTitle>
+          <DialogDescription className="text-sm leading-6">
+            确认删除已选中的 {selectedGroupIds.length} 个相关节点吗？相关连线也会一起删除，删除后无法恢复。
+          </DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setDeleteGroupDialogOpen(false)}>
+            取消
+          </Button>
+          <Button className="bg-rose-600 text-white hover:bg-rose-700" onClick={() => void deleteNodeGroup(selectedGroupIds)}>
+            确认删除
           </Button>
         </DialogFooter>
       </DialogContent>

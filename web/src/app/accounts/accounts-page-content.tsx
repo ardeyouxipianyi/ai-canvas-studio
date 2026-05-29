@@ -409,15 +409,20 @@ export function AccountsPageContent() {
 
   return (
     <>
-      <section className="mb-2 flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
-        <div className="space-y-1">
-          <div className="text-xs font-semibold tracking-[0.18em] text-stone-500 uppercase">
-            Account Pool
-          </div>
-          <h1 className="text-2xl font-semibold tracking-tight">号池管理</h1>
+      <section className="settings-module-toolbar">
+        <div className="flex flex-wrap items-center gap-2 text-xs text-stone-500">
+          <span className="rounded-full bg-white px-3 py-1 font-medium text-stone-700 ring-1 ring-stone-200">
+            总账号 {formatCompact(summary.total)}
+          </span>
+          <span className="rounded-full bg-emerald-50 px-3 py-1 font-medium text-emerald-700 ring-1 ring-emerald-100">
+            正常 {formatCompact(summary.active)}
+          </span>
+          <span className="rounded-full bg-stone-100 px-3 py-1 font-medium text-stone-600">
+            可用额度 {summary.quota}
+          </span>
         </div>
 
-        <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center sm:justify-end xl:max-w-[680px]">
+        <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center sm:justify-end">
           <Button
             variant="outline"
             className="h-10 rounded-xl border-stone-200 bg-white px-4 text-stone-700 hover:bg-stone-50"

@@ -52,6 +52,35 @@ def _progress(value: object, fallback: int = 0) -> int:
     return max(0, min(100, number))
 
 
+def _perceived_progress(task: dict[str, Any]) -> tuple[int, str]:
+    status = _clean(task.get("status"))
+    base_progress = _progress(task.get("progress"), 100 if status in TERMINAL_STATUSES else 0)
+    message = _clean(task.get("progress_message"))
+
+    if status == TASK_STATUS_QUEUED:
+        queued_at = _timestamp(task.get("created_at")) or time.time()
+        elapsed = max(0.0, time.time() - queued_at)
+        queued_progress = min(9, max(base_progress, int(elapsed / 2) + 1 if elapsed >= 2 else base_progress))
+        return queued_progress, message or "排队中"
+
+    if status != TASK_STATUS_RUNNING or base_progress >= 85:
+        return base_progress, message
+
+    stage_started_at = _timestamp(task.get("updated_at")) or _timestamp(task.get("created_at")) or time.time()
+    elapsed = max(0.0, time.time() - stage_started_at)
+    simulated = int(15 + 68 * (1 - (2 ** (-elapsed / 45))))
+    progress = min(82, max(base_progress, simulated))
+    if progress < 28:
+        message = "正在连接上游"
+    elif progress < 58:
+        message = "上游生成中"
+    elif progress < 78:
+        message = "等待上游返回"
+    else:
+        message = "等待结果确认"
+    return progress, message
+
+
 def _owner_id(identity: dict[str, object]) -> str:
     return _clean(identity.get("id")) or "anonymous"
 
@@ -71,14 +100,15 @@ def _collect_image_urls(data: list[Any]) -> list[str]:
 
 
 def _public_task(task: dict[str, Any]) -> dict[str, Any]:
+    progress, progress_message = _perceived_progress(task)
     item = {
         "id": task.get("id"),
         "status": task.get("status"),
         "mode": task.get("mode"),
         "model": task.get("model"),
         "size": task.get("size"),
-        "progress": _progress(task.get("progress")),
-        "progress_message": _clean(task.get("progress_message")),
+        "progress": progress,
+        "progress_message": progress_message,
         "created_at": task.get("created_at"),
         "updated_at": task.get("updated_at"),
     }
