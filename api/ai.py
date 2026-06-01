@@ -25,6 +25,7 @@ class ImageGenerationRequest(BaseModel):
     model: str = "gpt-image-2"
     n: int = Field(default=1, ge=1, le=4)
     size: str | None = None
+    quality: str = "auto"
     response_format: str = "b64_json"
     history_disabled: bool = True
     stream: bool | None = None
@@ -97,7 +98,7 @@ def _image_filename(index: int, mime_type: str, source: object = None) -> str:
 
 
 def _iter_json_image_sources(body: dict[str, Any]):
-    for key in ("image", "images", "image[]", "input_image", "input_images", "inputImages"):
+    for key in ("image", "image[]", "images", "images[]", "image_url", "image_url[]", "input_image", "input_images", "inputImages"):
         value = body.get(key)
         if value is None:
             continue
@@ -125,12 +126,13 @@ async def _images_from_form(request: Request) -> tuple[dict[str, Any], list[tupl
         "model": str(form.get("model") or "gpt-image-2"),
         "n": _parse_image_count(form.get("n")),
         "size": str(form.get("size") or "") or None,
+        "quality": str(form.get("quality") or "auto"),
         "response_format": str(form.get("response_format") or "b64_json"),
         "stream": _parse_optional_bool(form.get("stream")),
         "message_as_error": _parse_optional_bool(form.get("message_as_error")),
     }
     images: list[tuple[bytes, str, str]] = []
-    for key in ("image", "image[]", "images"):
+    for key in ("image", "image[]", "images", "images[]", "image_url", "image_url[]"):
         for upload in form.getlist(key):
             if not hasattr(upload, "read"):
                 continue
@@ -158,6 +160,7 @@ async def _images_from_json(request: Request) -> tuple[dict[str, Any], list[tupl
         "model": str(body.get("model") or "gpt-image-2"),
         "n": _parse_image_count(body.get("n")),
         "size": str(body.get("size") or "") or None,
+        "quality": str(body.get("quality") or "auto"),
         "response_format": str(body.get("response_format") or body.get("responseFormat") or "b64_json"),
         "stream": _parse_optional_bool(body.get("stream")),
         "message_as_error": _parse_optional_bool(message_as_error),
@@ -221,6 +224,7 @@ def create_router() -> APIRouter:
             "model": model,
             "n": parsed["n"],
             "size": parsed["size"],
+            "quality": parsed["quality"],
             "response_format": parsed["response_format"],
             "stream": parsed["stream"],
             "message_as_error": parsed["message_as_error"],

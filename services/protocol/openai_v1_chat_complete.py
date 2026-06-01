@@ -6,12 +6,14 @@ from typing import Any, Iterable, Iterator
 
 from fastapi import HTTPException
 
+from services.protocol.chat_completion_cache import cache_key, chat_completion_cache, normalize_text_messages
 from services.protocol.conversation import (
     ConversationRequest,
     ImageOutput,
     collect_image_outputs,
     collect_text,
-    count_message_tokens,
+    count_message_image_tokens,
+    count_message_text_tokens,
     count_text_tokens,
     encode_images,
     normalize_messages,
@@ -20,6 +22,18 @@ from services.protocol.conversation import (
     text_backend,
 )
 from utils.helper import build_chat_image_markdown_content, extract_chat_image, extract_chat_prompt, is_image_chat_request, parse_image_count
+from utils.image_tokens import (
+    chat_usage_from_image_usage,
+    count_image_inputs_tokens,
+    count_image_output_items_tokens,
+    image_usage,
+)
+
+TOOL_UNAVAILABLE_SYSTEM_MESSAGE = (
+    "This compatibility backend cannot execute local tools, shell commands, web searches, "
+    "or file operations. Do not claim to have run tools or inspected external resources. "
+    "If a user asks you to use a tool, say that tool execution is unavailable through this backend."
+)
 
 
 def completion_chunk(model: str, delta: dict[str, Any], finish_reason: str | None = None, completion_id: str = "", created: int | None = None) -> dict[str, Any]:
@@ -38,7 +52,9 @@ def completion_response(
     created: int | None = None,
     messages: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    prompt_tokens = count_message_tokens(messages, model) if messages else 0
+    prompt_text_tokens = count_message_text_tokens(messages, model) if messages else 0
+    prompt_image_tokens = count_message_image_tokens(messages, model) if messages else 0
+    prompt_tokens = prompt_text_tokens + prompt_image_tokens
     completion_tokens = count_text_tokens(content, model) if messages else 0
     return {
         "id": f"chatcmpl-{uuid.uuid4().hex}",
@@ -54,6 +70,16 @@ def completion_response(
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
             "total_tokens": prompt_tokens + completion_tokens,
+            "prompt_tokens_details": {
+                "text_tokens": prompt_text_tokens,
+                "image_tokens": prompt_image_tokens,
+                "cached_tokens": 0,
+            },
+            "completion_tokens_details": {
+                "text_tokens": completion_tokens,
+                "image_tokens": 0,
+                "reasoning_tokens": 0,
+            },
         },
     }
 
@@ -110,7 +136,10 @@ def chat_image_args(body: dict[str, Any]) -> tuple[str, str, int, list[tuple[byt
 
 def text_chat_parts(body: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
     model = str(body.get("model") or "auto").strip() or "auto"
-    messages = normalize_messages(chat_messages_from_body(body))
+    messages = normalize_text_messages(normalize_messages(chat_messages_from_body(body)))
+    tools = body.get("tools")
+    if isinstance(tools, list) and tools:
+        messages.insert(0, {"role": "system", "content": TOOL_UNAVAILABLE_SYSTEM_MESSAGE})
     return model, messages
 
 
@@ -130,7 +159,14 @@ def image_chat_response(body: dict[str, Any]) -> dict[str, Any]:
         response_format="b64_json",
         images=encode_images(images) or None,
     )))
-    return completion_response(model, image_result_content(result), int(result.get("created") or 0) or None)
+    response = completion_response(model, image_result_content(result), int(result.get("created") or 0) or None)
+    usage = image_usage(
+        input_text_tokens=count_text_tokens(prompt, model),
+        input_image_tokens=count_image_inputs_tokens(images, model),
+        output_tokens=count_image_output_items_tokens(result.get("data")),
+    )
+    response["usage"] = chat_usage_from_image_usage(usage)
+    return response
 
 
 def image_chat_events(body: dict[str, Any]) -> Iterator[dict[str, Any]]:
@@ -176,9 +212,20 @@ def handle(body: dict[str, Any]) -> dict[str, Any] | Iterator[dict[str, Any]]:
         if is_image_chat_request(body):
             return image_chat_events(body)
         model, messages = text_chat_parts(body)
-        return stream_text_chat_completion(text_backend(), messages, model)
+        key = cache_key(body, messages, stream=True)
+        return chat_completion_cache.get_or_compute_stream(
+            key,
+            lambda: stream_text_chat_completion(text_backend(), messages, model),
+        )
     if is_image_chat_request(body):
         return image_chat_response(body)
     model, messages = text_chat_parts(body)
-    request = ConversationRequest(model=model, messages=messages)
-    return completion_response(model, collect_text(text_backend(), request), messages=messages)
+    key = cache_key(body, messages, stream=False)
+    return chat_completion_cache.get_or_compute_response(
+        key,
+        lambda: completion_response(
+            model,
+            collect_text(text_backend(), ConversationRequest(model=model, messages=messages)),
+            messages=messages,
+        ),
+    )

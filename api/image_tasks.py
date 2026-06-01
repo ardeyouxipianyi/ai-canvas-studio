@@ -18,6 +18,7 @@ class ImageGenerationTaskRequest(BaseModel):
     prompt: str = Field(..., min_length=1)
     model: str = "gpt-image-2"
     size: str | None = None
+    quality: str = "auto"
 
 
 class ReversePromptTaskRequest(BaseModel):
@@ -50,7 +51,7 @@ def _image_filename(index: int, mime_type: str, source: object = None) -> str:
 
 
 def _iter_json_image_sources(body: dict[str, Any]):
-    for key in ("image", "images", "image[]", "input_image", "input_images", "inputImages"):
+    for key in ("image", "image[]", "images", "images[]", "image_url", "image_url[]", "input_image", "input_images", "inputImages"):
         value = body.get(key)
         if value is None:
             continue
@@ -85,9 +86,10 @@ async def _parse_edit_task_request(request: Request) -> tuple[dict[str, str | No
             "prompt": str(form.get("prompt") or ""),
             "model": str(form.get("model") or "gpt-image-2"),
             "size": str(form.get("size") or "") or None,
+            "quality": str(form.get("quality") or "auto"),
         }
         images: list[tuple[bytes, str, str]] = []
-        for key in ("image", "image[]", "images"):
+        for key in ("image", "image[]", "images", "images[]", "image_url", "image_url[]"):
             for upload in form.getlist(key):
                 if not hasattr(upload, "read"):
                     continue
@@ -112,6 +114,7 @@ async def _parse_edit_task_request(request: Request) -> tuple[dict[str, str | No
         "prompt": str(body.get("prompt") or ""),
         "model": str(body.get("model") or "gpt-image-2"),
         "size": str(body.get("size") or "") or None,
+        "quality": str(body.get("quality") or "auto"),
     }
     return payload, _images_from_json_body(body)
 
@@ -159,6 +162,7 @@ def create_router() -> APIRouter:
                 prompt=body.prompt,
                 model=body.model,
                 size=body.size,
+                quality=body.quality,
                 base_url=resolve_image_base_url(request),
             )
         except ValueError as exc:
@@ -175,6 +179,7 @@ def create_router() -> APIRouter:
         prompt = str(payload.get("prompt") or "")
         model = str(payload.get("model") or "gpt-image-2")
         size = payload.get("size")
+        quality = str(payload.get("quality") or "auto")
         if not client_task_id:
             raise HTTPException(status_code=400, detail={"error": "client_task_id is required"})
         if not prompt.strip():
@@ -190,6 +195,7 @@ def create_router() -> APIRouter:
                 prompt=prompt,
                 model=model,
                 size=size,
+                quality=quality,
                 base_url=resolve_image_base_url(request),
                 images=images,
             )

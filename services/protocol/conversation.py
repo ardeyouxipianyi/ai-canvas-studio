@@ -15,7 +15,14 @@ import tiktoken
 from services.account_service import account_service
 from services.config import config
 from services.openai_backend_api import OpenAIBackendAPI
-from utils.helper import IMAGE_MODELS, extract_image_from_message_content
+from utils.helper import (
+    IMAGE_MODELS,
+    extract_image_from_message_content,
+    is_codex_image_model,
+    is_supported_image_model,
+    split_image_model,
+)
+from utils.image_tokens import count_image_content_tokens
 from utils.log import logger
 
 
@@ -94,6 +101,8 @@ def parse_image_quota_restore_at(message: str) -> str | None:
 def image_stream_error_message(message: str) -> str:
     text = str(message or "")
     lower = text.lower()
+    if is_token_invalid_error(text):
+        return "image generation failed"
     if "curl: (35)" in lower or "tls connect error" in lower or "openssl_internal" in lower:
         return "upstream image connection failed, please retry later"
     return text or "image generation failed"
@@ -191,19 +200,23 @@ def assistant_history_messages(messages: list[dict[str, Any]]) -> list[str]:
     return [str(item.get("content") or "") for item in messages if item.get("role") == "assistant" and item.get("content")]
 
 
-def build_image_prompt(prompt: str, size: str | None) -> str:
-    if not size:
-        return prompt
-    if size not in {"1:1", "16:9", "9:16", "4:3", "3:4"}:
-        return f"{prompt.strip()}\n\n输出图片，宽高比为 {size}。"
-    hint = {
-        "1:1": "输出为 1:1 正方形构图，主体居中，适合正方形画幅。",
-        "16:9": "输出为 16:9 横屏构图，适合宽画幅展示。",
-        "9:16": "输出为 9:16 竖屏构图，适合竖版画幅展示。",
-        "4:3": "输出为 4:3 比例，兼顾宽度与高度，适合展示画面细节。",
-        "3:4": "输出为 3:4 比例，纵向构图，适合人物肖像或竖向场景。",
-    }[size]
-    return f"{prompt.strip()}\n\n{hint}"
+def build_image_prompt(prompt: str, size: str | None, quality: str = "auto") -> str:
+    hints: list[str] = []
+    if size:
+        if size not in {"1:1", "16:9", "9:16", "4:3", "3:4"}:
+            hints.append(f"输出图片，宽高比为 {size}。")
+        else:
+            hints.append({
+                "1:1": "输出为 1:1 正方形构图，主体居中，适合正方形画幅。",
+                "16:9": "输出为 16:9 横屏构图，适合宽画幅展示。",
+                "9:16": "输出为 9:16 竖屏构图，适合竖版画幅展示。",
+                "4:3": "输出为 4:3 比例，兼顾宽度与高度，适合展示画面细节。",
+                "3:4": "输出为 3:4 比例，纵向构图，适合人物肖像或竖向场景。",
+            }[size])
+    normalized_quality = str(quality or "").strip()
+    if normalized_quality and normalized_quality.lower() != "auto":
+        hints.append(f"输出图片质量为 {normalized_quality}。")
+    return f"{prompt.strip()}\n\n{''.join(hints)}" if hints else prompt
 
 
 def encoding_for_model(model: str):
@@ -216,18 +229,29 @@ def encoding_for_model(model: str):
             return tiktoken.get_encoding("cl100k_base")
 
 
-def count_message_tokens(messages: list[dict[str, Any]], model: str) -> int:
+def count_message_image_tokens(messages: list[dict[str, Any]], model: str) -> int:
+    return sum(count_image_content_tokens(message.get("content"), model) for message in messages)
+
+
+def count_message_text_tokens(messages: list[dict[str, Any]], model: str) -> int:
     encoding = encoding_for_model(model)
     total = 0
     for message in messages:
         total += 3
         for key, value in message.items():
-            if not isinstance(value, str):
+            if key == "content" and isinstance(value, list):
+                total += len(encoding.encode(message_text(value)))
+            elif isinstance(value, str):
+                total += len(encoding.encode(value))
+            else:
                 continue
-            total += len(encoding.encode(value))
             if key == "name":
                 total += 1
     return total + 3
+
+
+def count_message_tokens(messages: list[dict[str, Any]], model: str) -> int:
+    return count_message_text_tokens(messages, model) + count_message_image_tokens(messages, model)
 
 
 def count_text_tokens(text: str, model: str) -> int:
@@ -274,6 +298,7 @@ class ConversationRequest:
     images: list[str] | None = None
     n: int = 1
     size: str | None = None
+    quality: str = "auto"
     response_format: str = "b64_json"
     base_url: str | None = None
     message_as_error: bool = False
@@ -346,7 +371,49 @@ def strip_history(text: str, history_text: str = "") -> str:
     return text
 
 
-def assistant_text(event: dict[str, Any], current_text: str = "", history_text: str = "") -> str:
+def sanitize_output_text(text: str) -> str:
+    text = str(text or "")
+
+    def is_internal_annotation_part(part: str) -> bool:
+        value = part.strip()
+        if not value:
+            return True
+        lower = value.lower()
+        return bool(
+            re.fullmatch(r"turn\d+[a-z]*\d*", lower)
+            or re.fullmatch(r"turn\d+\w*", lower)
+            or lower.startswith(("turn", "source", "sources"))
+        )
+
+    def readable_annotation_part(parts: list[str]) -> str:
+        for part in parts:
+            value = part.strip()
+            if value and not is_internal_annotation_part(value):
+                return value
+        return ""
+
+    def replace_annotation(match: re.Match[str]) -> str:
+        payload = match.group(1)
+        parts = [part.strip() for part in payload.split("\ue202")]
+        kind = (parts[0] if parts else "").lower()
+        data = parts[1:]
+        if kind == "url":
+            label = data[0] if data else ""
+            url = data[1] if len(data) > 1 else ""
+            if label and url.startswith(("http://", "https://")):
+                return f"{label} ({url})"
+            return label or url
+        if kind == "cite":
+            return readable_annotation_part(data)
+        return readable_annotation_part(data)
+
+    text = re.sub(r"\ue200([^\ue201]*)\ue201", replace_annotation, text)
+    text = re.sub(r"\ue200[^\ue201]*$", "", text)
+    text = re.sub(r"\s+([.,;:!?])", r"\1", text)
+    return text
+
+
+def assistant_raw_text(event: dict[str, Any], current_text: str = "", history_text: str = "") -> str:
     for candidate in (event, event.get("v")):
         if not isinstance(candidate, dict):
             continue
@@ -360,6 +427,10 @@ def assistant_text(event: dict[str, Any], current_text: str = "", history_text: 
         if text:
             return strip_history(text, history_text)
     return apply_text_patch(event, current_text, history_text)
+
+
+def assistant_text(event: dict[str, Any], current_text: str = "", history_text: str = "") -> str:
+    return sanitize_output_text(assistant_raw_text(event, current_text, history_text))
 
 
 def event_assistant_text(event: dict[str, Any], history_text: str = "") -> str:
@@ -413,11 +484,18 @@ def add_unique(values: list[str], candidates: list[str]) -> None:
             values.append(candidate)
 
 
+FILE_SERVICE_ID_RE = re.compile(r"file-service://([A-Za-z0-9_-]+)")
+FILE_ID_RE = re.compile(r"\b(file[-_](?!service\b)[A-Za-z0-9_-]+)\b")
+SEDIMENT_ID_RE = re.compile(r"sediment://([A-Za-z0-9_-]+)")
+
+
 def extract_conversation_ids(payload: str) -> tuple[str, list[str], list[str]]:
     conversation_match = re.search(r'"conversation_id"\s*:\s*"([^"]+)"', payload)
     conversation_id = conversation_match.group(1) if conversation_match else ""
-    file_ids = re.findall(r"(file[-_][A-Za-z0-9]+)", payload)
-    sediment_ids = re.findall(r"sediment://([A-Za-z0-9_-]+)", payload)
+    file_ids: list[str] = []
+    add_unique(file_ids, FILE_SERVICE_ID_RE.findall(payload))
+    add_unique(file_ids, FILE_ID_RE.findall(payload))
+    sediment_ids = SEDIMENT_ID_RE.findall(payload)
     return conversation_id, file_ids, sediment_ids
 
 
@@ -428,7 +506,21 @@ def is_image_tool_event(event: dict[str, Any]) -> bool:
         return False
     metadata = message.get("metadata") or {}
     author = message.get("author") or {}
-    return author.get("role") == "tool" and metadata.get("async_task_type") == "image_gen"
+    content = message.get("content") or {}
+    if author.get("role") != "tool":
+        return False
+    if metadata.get("async_task_type") == "image_gen":
+        return True
+    if content.get("content_type") != "multimodal_text":
+        return False
+    return any(
+        isinstance(part, dict)
+        and (
+            part.get("content_type") == "image_asset_pointer"
+            or str(part.get("asset_pointer") or "").startswith(("file-service://", "sediment://"))
+        )
+        for part in content.get("parts") or []
+    )
 
 
 def update_conversation_state(state: ConversationState, payload: str, event: dict[str, Any] | None = None) -> None:
@@ -512,12 +604,13 @@ def conversation_events(
     prompt: str = "",
     images: list[str] | None = None,
     size: str | None = None,
+    quality: str = "auto",
 ) -> Iterator[dict[str, Any]]:
     normalized = normalize_messages(messages or ([{"role": "user", "content": prompt}] if prompt else []))
-    image_model = str(model or "").strip() in IMAGE_MODELS
+    image_model = is_supported_image_model(model)
     history_text = "" if image_model else assistant_history_text(normalized)
     history_messages = [] if image_model else assistant_history_messages(normalized)
-    final_prompt = prompt_with_global_system(build_image_prompt(prompt, size)) if image_model else prompt
+    final_prompt = prompt_with_global_system(build_image_prompt(prompt, size, quality)) if image_model else prompt
     payloads = backend.stream_conversation(
         messages=normalized,
         model=model,
@@ -590,6 +683,7 @@ def stream_image_outputs(
             model=request.model,
             images=request.images or [],
             size=request.size,
+            quality=request.quality,
     ):
         last = event
         if event.get("type") == "conversation.delta":
@@ -621,7 +715,6 @@ def stream_image_outputs(
     file_ids = [str(item) for item in last.get("file_ids") or []]
     sediment_ids = [str(item) for item in last.get("sediment_ids") or []]
     message = str(last.get("text") or "").strip()
-    is_text_response = last.get("tool_invoked") is False or last.get("turn_use_case") == "text"
     image_task_accepted = saw_async_status or last.get("tool_invoked") is True or bool(file_ids or sediment_ids)
     poll_timeout_secs = image_result_poll_timeout_secs(image_task_accepted)
     logger.info({
@@ -635,7 +728,11 @@ def stream_image_outputs(
         "saw_stream_complete": saw_stream_complete,
         "poll_timeout_secs": poll_timeout_secs,
     })
-    if message and not file_ids and not sediment_ids and (last.get("blocked") or is_text_response):
+    if message and not file_ids and not sediment_ids and last.get("blocked"):
+        yield ImageOutput(kind="message", model=request.model, index=index, total=total, text=message)
+        return
+    should_poll_for_image = bool(request.images) or last.get("turn_use_case") == "image gen"
+    if message and not file_ids and not sediment_ids and not should_poll_for_image:
         yield ImageOutput(kind="message", model=request.model, index=index, total=total, text=message)
         return
 
@@ -667,8 +764,11 @@ def stream_image_outputs(
 
 
 def stream_image_outputs_with_pool(request: ConversationRequest) -> Iterator[ImageOutput]:
-    if str(request.model or "").strip() not in IMAGE_MODELS:
-        raise ImageGenerationError("unsupported image model,supported models: " + ", ".join(IMAGE_MODELS))
+    if not is_supported_image_model(request.model):
+        raise ImageGenerationError("unsupported image model,supported models: " + ", ".join(sorted(IMAGE_MODELS)))
+
+    plan_type, _ = split_image_model(request.model)
+    codex_model = is_codex_image_model(request.model)
 
     emitted = False
     last_error = ""
@@ -679,7 +779,12 @@ def stream_image_outputs_with_pool(request: ConversationRequest) -> Iterator[Ima
         while True:
             try:
                 excluded = attempted_tokens if config.image_pool_failover_enabled else None
-                token = account_service.get_available_access_token(excluded)
+                token = account_service.get_available_access_token(
+                    excluded,
+                    plan_type=plan_type,
+                    source_type="codex" if codex_model else None,
+                    plan_types=("plus", "team", "pro") if codex_model and not plan_type else None,
+                )
             except RuntimeError as exc:
                 if emitted:
                     return

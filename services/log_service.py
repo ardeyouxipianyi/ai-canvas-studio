@@ -188,6 +188,33 @@ def _count_image_outputs(result: object = None, urls: list[str] | None = None) -
     return 0
 
 
+def _usage_int(value: object) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _collect_usage(result: object) -> dict[str, int]:
+    usage = result.get("usage") if isinstance(result, dict) else None
+    if not isinstance(usage, dict):
+        return {}
+    input_details = usage.get("input_tokens_details") or usage.get("prompt_tokens_details")
+    output_details = usage.get("output_tokens_details") or usage.get("completion_tokens_details")
+    input_details = input_details if isinstance(input_details, dict) else {}
+    output_details = output_details if isinstance(output_details, dict) else {}
+    input_tokens = _usage_int(usage.get("input_tokens") if "input_tokens" in usage else usage.get("prompt_tokens"))
+    output_tokens = _usage_int(usage.get("output_tokens") if "output_tokens" in usage else usage.get("completion_tokens"))
+    total_tokens = _usage_int(usage.get("total_tokens") or (input_tokens + output_tokens))
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens,
+        "input_image_tokens": _usage_int(input_details.get("image_tokens")),
+        "output_image_tokens": _usage_int(output_details.get("image_tokens")),
+    }
+
+
 def _request_excerpt(text: object, limit: int = 1000) -> str:
     value = _redact_sensitive_text(str(text or "").strip())
     if not value:
@@ -316,6 +343,9 @@ class LoggedCall:
         collected_urls = [*(urls or []), *_collect_urls(result)]
         if collected_urls:
             detail["urls"] = list(dict.fromkeys(collected_urls))
+        token_usage = _collect_usage(result)
+        if token_usage:
+            detail["usage"] = token_usage
         log_service.add(LOG_TYPE_CALL, f"{self.summary}{suffix}", detail)
         try:
             from services.auth_service import auth_service
@@ -326,6 +356,7 @@ class LoggedCall:
                 status=status,
                 duration_ms=duration_ms,
                 generated_images=_count_image_outputs(result, urls),
+                token_usage=token_usage,
             )
         except Exception:
             pass

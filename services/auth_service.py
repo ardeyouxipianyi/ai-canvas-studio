@@ -22,6 +22,11 @@ USAGE_STAT_KEYS = {
     "image_failed_calls",
     "generated_images",
     "total_duration_ms",
+    "input_tokens",
+    "output_tokens",
+    "total_tokens",
+    "input_image_tokens",
+    "output_image_tokens",
 }
 
 
@@ -282,6 +287,7 @@ class AuthService:
         status: str = "success",
         duration_ms: int = 0,
         generated_images: int = 0,
+        token_usage: dict[str, object] | None = None,
     ) -> None:
         key_id = self._clean(identity.get("id"))
         if not key_id or key_id == "admin":
@@ -311,6 +317,12 @@ class AuthService:
                     else:
                         usage["image_failed_calls"] = _normalize_non_negative_int(usage.get("image_failed_calls")) + 1
                     usage["generated_images"] = _normalize_non_negative_int(usage.get("generated_images")) + _normalize_non_negative_int(generated_images)
+                if isinstance(token_usage, dict):
+                    usage["input_tokens"] = _normalize_non_negative_int(usage.get("input_tokens")) + _normalize_non_negative_int(token_usage.get("input_tokens"))
+                    usage["output_tokens"] = _normalize_non_negative_int(usage.get("output_tokens")) + _normalize_non_negative_int(token_usage.get("output_tokens"))
+                    usage["total_tokens"] = _normalize_non_negative_int(usage.get("total_tokens")) + _normalize_non_negative_int(token_usage.get("total_tokens"))
+                    usage["input_image_tokens"] = _normalize_non_negative_int(usage.get("input_image_tokens")) + _normalize_non_negative_int(token_usage.get("input_image_tokens"))
+                    usage["output_image_tokens"] = _normalize_non_negative_int(usage.get("output_image_tokens")) + _normalize_non_negative_int(token_usage.get("output_image_tokens"))
                 next_item = dict(item)
                 next_item["usage"] = usage
                 self._items[index] = next_item

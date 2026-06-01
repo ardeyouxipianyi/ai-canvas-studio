@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { BoxSelect, Columns2, Copy, Download, ImagePlus, LoaderCircle, LocateFixed, Maximize2, MoreHorizontal, PanelLeft, PanelRight, Plus, RefreshCcw, Save, ScissorsLineDashed, Settings, Star, Trash2, Workflow, X, ZoomIn, ZoomOut } from "lucide-react";
@@ -32,7 +32,7 @@ const IMAGE_COUNT_STORAGE_KEY = "chatgpt2api:image_last_count";
 const nodeSize = {
   prompt: { width: 320, height: 220 },
   edit: { width: 320, height: 220 },
-  image: { width: 300, height: 286 },
+  image: { width: 300, height: 320 },
 };
 const GENERATION_RESULT_GAP = 32;
 const GENERATION_RESULT_Y_OFFSET = 86;
@@ -70,6 +70,15 @@ function clamp(value: number, min: number, max: number) {
 
 function clampCount(value: string) {
   return String(Math.min(100, Math.max(1, Math.floor(Number(value) || 1))));
+}
+
+function getNodeRenderHeight(node: Pick<ImageCanvasNode, "type" | "height">) {
+  return node.type === "image" ? Math.max(node.height, nodeSize.image.height) : node.height;
+}
+
+function getNodeForEdgePath(node: ImageCanvasNode): ImageCanvasNode {
+  const height = getNodeRenderHeight(node);
+  return height === node.height ? node : { ...node, height };
 }
 
 type CanvasReferenceImage = {
@@ -435,6 +444,20 @@ function getNodePreview(node: ImageCanvasNode) {
   return node.prompt || node.revised_prompt || node.error || node.size || getStatusLabel(node.status);
 }
 
+function getNodeCreatedTime(node: ImageCanvasNode) {
+  const createdTime = new Date(node.createdAt).getTime();
+  if (Number.isFinite(createdTime)) return createdTime;
+  const updatedTime = new Date(node.updatedAt).getTime();
+  return Number.isFinite(updatedTime) ? updatedTime : 0;
+}
+
+function getLatestCanvasNode(nodes: ImageCanvasNode[]) {
+  return nodes.reduce<ImageCanvasNode | null>((latest, node) => {
+    if (!latest) return node;
+    return getNodeCreatedTime(node) >= getNodeCreatedTime(latest) ? node : latest;
+  }, null);
+}
+
 function getRelatedCanvasNodeIds(project: ImageCanvasProject, nodeId: string) {
   const node = project.nodes.find((item) => item.id === nodeId);
   if (!node) return [];
@@ -460,7 +483,7 @@ function getCanvasBounds(nodes: ImageCanvasNode[]) {
   const minX = Math.min(...nodes.map((node) => node.x));
   const minY = Math.min(...nodes.map((node) => node.y));
   const maxX = Math.max(...nodes.map((node) => node.x + node.width));
-  const maxY = Math.max(...nodes.map((node) => node.y + node.height));
+  const maxY = Math.max(...nodes.map((node) => node.y + getNodeRenderHeight(node)));
   return { minX, minY, maxX, maxY, width: maxX - minX, height: maxY - minY };
 }
 
@@ -476,14 +499,41 @@ function rectsOverlap(rectA: CanvasRect, rectB: CanvasRect, gap = 36) {
   );
 }
 
+function nodeToRect(node: ImageCanvasNode): CanvasRect {
+  return {
+    x: node.x,
+    y: node.y,
+    width: node.width,
+    height: getNodeRenderHeight(node),
+  };
+}
+
+function expandRect(rect: CanvasRect, padding: number): CanvasRect {
+  return {
+    x: rect.x - padding,
+    y: rect.y - padding,
+    width: rect.width + padding * 2,
+    height: rect.height + padding * 2,
+  };
+}
+
+function viewportToCanvasRect(viewport: ImageCanvasViewport, viewportWidth: number, viewportHeight: number): CanvasRect {
+  const zoom = Math.max(0.01, viewport.zoom || 1);
+  return {
+    x: -viewport.x / zoom,
+    y: -viewport.y / zoom,
+    width: viewportWidth / zoom,
+    height: viewportHeight / zoom,
+  };
+}
+
+function isNodeNearViewport(node: ImageCanvasNode, viewportRect: CanvasRect, padding: number) {
+  return rectsOverlap(nodeToRect(node), expandRect(viewportRect, padding), 0);
+}
+
 function branchOverlapsNodes(branchRects: CanvasRect[], nodes: ImageCanvasNode[]) {
   return branchRects.some((rect) =>
-    nodes.some((node) => rectsOverlap(rect, {
-      x: node.x,
-      y: node.y,
-      width: node.width,
-      height: node.height,
-    })),
+    nodes.some((node) => rectsOverlap(rect, nodeToRect(node))),
   );
 }
 
@@ -868,6 +918,11 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
   const reversePromptFileInputRef = useRef<HTMLInputElement>(null);
   const activeProjectRef = useRef<ImageCanvasProject | null>(null);
   const dragStateRef = useRef<DragState | null>(null);
+  const interactionTimeoutRef = useRef<number | null>(null);
+  const viewportPersistTimeoutRef = useRef<number | null>(null);
+  const localProjectFrameRef = useRef<number | null>(null);
+  const pendingLocalProjectRef = useRef<ImageCanvasProject | null>(null);
+  const isCanvasInteractingRef = useRef(false);
   const [projects, setProjects] = useState<ImageCanvasProject[]>([]);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -894,6 +949,8 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
   const [lightboxIndex, setLightboxIndex] = useState(0);
   const [lightboxImages, setLightboxImages] = useState<Array<{ id: string; src: string; sizeLabel?: string }>>([]);
   const [compareNodeIds, setCompareNodeIds] = useState<string[]>([]);
+  const [isCanvasInteracting, setIsCanvasInteracting] = useState(false);
+  const [canvasViewportSize, setCanvasViewportSize] = useState({ width: 1280, height: 720 });
   const [availableQuota, setAvailableQuota] = useState("加载中...");
 
   const activeProject = useMemo(() => findProject(projects, activeProjectId), [projects, activeProjectId]);
@@ -931,6 +988,28 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
   useEffect(() => {
     activeProjectRef.current = activeProject;
   }, [activeProject]);
+
+  useEffect(() => {
+    const element = canvasRef.current;
+    if (!element || typeof window === "undefined") return;
+
+    const updateViewportSize = () => {
+      const rect = element.getBoundingClientRect();
+      setCanvasViewportSize({
+        width: Math.max(1, Math.round(rect.width)),
+        height: Math.max(1, Math.round(rect.height)),
+      });
+    };
+
+    updateViewportSize();
+    const observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(updateViewportSize) : null;
+    observer?.observe(element);
+    window.addEventListener("resize", updateViewportSize);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", updateViewportSize);
+    };
+  }, []);
 
   useEffect(() => {
     const sourceNode = selectedEditNode || selectedPromptNode;
@@ -1054,6 +1133,34 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
     setProjects((current) => [project, ...current.filter((item) => item.id !== project.id)]);
   }, []);
 
+  const scheduleLocalProject = useCallback((project: ImageCanvasProject) => {
+    activeProjectRef.current = project;
+    pendingLocalProjectRef.current = project;
+    if (localProjectFrameRef.current !== null) return;
+    localProjectFrameRef.current = window.requestAnimationFrame(() => {
+      localProjectFrameRef.current = null;
+      const nextProject = pendingLocalProjectRef.current;
+      pendingLocalProjectRef.current = null;
+      if (!nextProject) return;
+      setProjects((current) => [nextProject, ...current.filter((item) => item.id !== nextProject.id)]);
+    });
+  }, []);
+
+  const markCanvasInteracting = useCallback((idleDelay = 160) => {
+    if (!isCanvasInteractingRef.current) {
+      isCanvasInteractingRef.current = true;
+      setIsCanvasInteracting(true);
+    }
+    if (interactionTimeoutRef.current !== null) {
+      window.clearTimeout(interactionTimeoutRef.current);
+    }
+    interactionTimeoutRef.current = window.setTimeout(() => {
+      interactionTimeoutRef.current = null;
+      isCanvasInteractingRef.current = false;
+      setIsCanvasInteracting(false);
+    }, idleDelay);
+  }, []);
+
   const persistProject = useCallback(async (project: ImageCanvasProject) => {
     const nextProject = { ...project, updatedAt: new Date().toISOString() };
     applyLocalProject(nextProject);
@@ -1062,6 +1169,31 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
     setSaveState("saved");
     return nextProject;
   }, [applyLocalProject]);
+
+  const persistViewportLater = useCallback((delay = 260) => {
+    if (viewportPersistTimeoutRef.current !== null) {
+      window.clearTimeout(viewportPersistTimeoutRef.current);
+    }
+    viewportPersistTimeoutRef.current = window.setTimeout(() => {
+      viewportPersistTimeoutRef.current = null;
+      const project = activeProjectRef.current;
+      if (project) {
+        void persistProject(project);
+      }
+    }, delay);
+  }, [persistProject]);
+
+  useEffect(() => () => {
+    if (interactionTimeoutRef.current !== null) {
+      window.clearTimeout(interactionTimeoutRef.current);
+    }
+    if (viewportPersistTimeoutRef.current !== null) {
+      window.clearTimeout(viewportPersistTimeoutRef.current);
+    }
+    if (localProjectFrameRef.current !== null) {
+      window.cancelAnimationFrame(localProjectFrameRef.current);
+    }
+  }, []);
 
   const updateActiveProject = useCallback(
     async (updater: (project: ImageCanvasProject) => ImageCanvasProject) => {
@@ -2142,16 +2274,18 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
     await updateViewport(viewportForBounds(bounds, rect.width, rect.height));
   }, [updateViewport]);
 
-  const focusAllNodesCenter = useCallback(async () => {
+  const focusLatestNodeCenter = useCallback(async () => {
     const project = activeProjectRef.current;
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!project || !rect) return;
-    const bounds = getCanvasBounds(project.nodes);
-    if (!bounds) return;
+    const node = getLatestCanvasNode(project.nodes);
+    if (!node) return;
     const zoom = clamp(project.viewport.zoom, 0.35, 1.8);
+    setSelectedNodeId(node.id);
+    setSelectedGroupIds([]);
     await updateViewport({
-      x: rect.width / 2 - (bounds.minX + bounds.width / 2) * zoom,
-      y: rect.height / 2 - (bounds.minY + bounds.height / 2) * zoom,
+      x: rect.width / 2 - (node.x + node.width / 2) * zoom,
+      y: rect.height / 2 - (node.y + getNodeRenderHeight(node) / 2) * zoom,
       zoom,
     });
   }, [updateViewport]);
@@ -2177,6 +2311,7 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
       const project = activeProjectRef.current;
       if (!project) return;
       event.preventDefault();
+      markCanvasInteracting(180);
       const rect = canvasRef.current?.getBoundingClientRect();
       if (!rect) return;
       const zoom = clamp(project.viewport.zoom - event.deltaY * 0.001, 0.35, 1.8);
@@ -2184,13 +2319,17 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
       const mouseY = event.clientY - rect.top;
       const worldX = (mouseX - project.viewport.x) / project.viewport.zoom;
       const worldY = (mouseY - project.viewport.y) / project.viewport.zoom;
-      void updateViewport({
-        x: mouseX - worldX * zoom,
-        y: mouseY - worldY * zoom,
-        zoom,
+      scheduleLocalProject({
+        ...project,
+        viewport: {
+          x: mouseX - worldX * zoom,
+          y: mouseY - worldY * zoom,
+          zoom,
+        },
       });
+      persistViewportLater();
     },
-    [updateViewport],
+    [markCanvasInteracting, persistViewportLater, scheduleLocalProject],
   );
 
   const handleCanvasPointerDown = useCallback(
@@ -2204,6 +2343,7 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
         clearComposerInputs();
       }
       event.currentTarget.setPointerCapture(event.pointerId);
+      markCanvasInteracting();
       dragStateRef.current = {
         type: "pan",
         startX: event.clientX,
@@ -2211,12 +2351,13 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
         baseViewport: project.viewport,
       };
     },
-    [clearComposerInputs, selectedEditNode, selectedPromptNode],
+    [clearComposerInputs, markCanvasInteracting, selectedEditNode, selectedPromptNode],
   );
 
   const handleNodePointerDown = useCallback((event: ReactPointerEvent<HTMLElement>, node: ImageCanvasNode) => {
     event.stopPropagation();
     event.currentTarget.setPointerCapture(event.pointerId);
+    markCanvasInteracting();
     const zoom = activeProjectRef.current?.viewport.zoom ?? 1;
     dragStateRef.current = {
       type: "node",
@@ -2229,18 +2370,19 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
     };
     setSelectedNodeId(node.id);
     setSelectedGroupIds([]);
-  }, []);
+  }, [markCanvasInteracting]);
 
   const handlePointerMove = useCallback(
     (event: ReactPointerEvent<HTMLDivElement | HTMLElement>) => {
       const dragState = dragStateRef.current;
       if (!dragState) return;
+      markCanvasInteracting();
       if (dragState.type === "pan") {
         const dx = event.clientX - dragState.startX;
         const dy = event.clientY - dragState.startY;
         const project = activeProjectRef.current;
         if (project) {
-          applyLocalProject({
+          scheduleLocalProject({
             ...project,
             viewport: {
               ...dragState.baseViewport,
@@ -2255,7 +2397,7 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
       const dy = (event.clientY - dragState.startY) / dragState.zoom;
       const project = activeProjectRef.current;
       if (!project) return;
-      applyLocalProject({
+      scheduleLocalProject({
         ...project,
         nodes: project.nodes.map((node) =>
           node.id === dragState.nodeId
@@ -2269,7 +2411,7 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
         ),
       });
     },
-    [applyLocalProject],
+    [markCanvasInteracting, scheduleLocalProject],
   );
 
   const handlePointerUp = useCallback(() => {
@@ -2277,17 +2419,24 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
     dragStateRef.current = null;
     const project = activeProjectRef.current;
     if (hadDragState && project) {
+      if (localProjectFrameRef.current !== null) {
+        window.cancelAnimationFrame(localProjectFrameRef.current);
+        localProjectFrameRef.current = null;
+        pendingLocalProjectRef.current = null;
+      }
+      markCanvasInteracting(90);
       void persistProject(project);
     }
-  }, [persistProject]);
+  }, [markCanvasInteracting, persistProject]);
 
   const zoomBy = useCallback(
     (delta: number) => {
       const project = activeProjectRef.current;
       if (!project) return;
+      markCanvasInteracting(120);
       void updateViewport({ ...project.viewport, zoom: clamp(project.viewport.zoom + delta, 0.35, 1.8) });
     },
-    [updateViewport],
+    [markCanvasInteracting, updateViewport],
   );
 
   useEffect(() => {
@@ -2330,6 +2479,29 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
   const upstreamHighlight = getSelectedUpstreamHighlight(activeProject, selectedNodeId);
   const canvasNodeList = [...activeProject.nodes].sort((a, b) => Number(Boolean(b.favorite)) - Number(Boolean(a.favorite)) || a.y - b.y || a.x - b.x);
   const selectedGroupSet = new Set(selectedGroupIds);
+  const isLiteCanvas = isCanvasInteracting || activeProject.viewport.zoom < 0.55;
+  const shouldCullCanvas = activeProject.nodes.length > 40;
+  const viewportRect = viewportToCanvasRect(activeProject.viewport, canvasViewportSize.width, canvasViewportSize.height);
+  const nodeRenderPadding = isCanvasInteracting ? 520 : 900;
+  const alwaysRenderNodeIds = new Set<string>([...selectedGroupIds, ...compareNodeIds]);
+  if (selectedNodeId) {
+    alwaysRenderNodeIds.add(selectedNodeId);
+  }
+  for (const nodeId of upstreamHighlight.nodeColors.keys()) {
+    alwaysRenderNodeIds.add(nodeId);
+  }
+  for (const node of activeProject.nodes) {
+    if (node.status === "queued" || node.status === "generating") {
+      alwaysRenderNodeIds.add(node.id);
+    }
+  }
+  const visibleNodes = shouldCullCanvas
+    ? activeProject.nodes.filter((node) => alwaysRenderNodeIds.has(node.id) || isNodeNearViewport(node, viewportRect, nodeRenderPadding))
+    : activeProject.nodes;
+  const visibleNodeSet = new Set(visibleNodes.map((node) => node.id));
+  const visibleEdges = shouldCullCanvas ? activeProject.edges.filter((edge) => visibleNodeSet.has(edge.from) && visibleNodeSet.has(edge.to)) : activeProject.edges;
+  const skipEdgeGlow = isLiteCanvas || visibleEdges.length > 80;
+  const deferImagePreviews = isCanvasInteracting && activeProject.nodes.length > 16;
 
   return (
     <>
@@ -2608,7 +2780,7 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
               <Maximize2 className="size-4" />
               <span className="hidden lg:inline">适配</span>
             </Button>
-            <Button variant="outline" className="h-9 rounded-full border-stone-200 bg-white/95 px-3 backdrop-blur" onClick={() => void focusAllNodesCenter()} disabled={activeProject.nodes.length === 0} title="定位到全部节点中心">
+            <Button variant="outline" className="h-9 rounded-full border-stone-200 bg-white/95 px-3 backdrop-blur" onClick={() => void focusLatestNodeCenter()} disabled={activeProject.nodes.length === 0} title="定位到最新节点">
               <LocateFixed className="size-4" />
               <span className="hidden xl:inline">定位</span>
             </Button>
@@ -2770,30 +2942,35 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
           onPointerCancel={handlePointerUp}
         >
           <div
-            className="absolute left-0 top-0 h-[4200px] w-[5600px]"
+            className={cn("absolute left-0 top-0 h-[4200px] w-[5600px]", isLiteCanvas ? "pointer-events-auto" : "")}
             style={{
               transform: `translate(${activeProject.viewport.x}px, ${activeProject.viewport.y}px) scale(${activeProject.viewport.zoom})`,
               transformOrigin: "0 0",
+              willChange: isCanvasInteracting ? "transform" : undefined,
             }}
           >
             <svg className="pointer-events-none absolute inset-0 h-full w-full overflow-visible">
-              {activeProject.edges.map((edge) => {
+              {visibleEdges.map((edge) => {
                 const from = nodeMap.get(edge.from);
                 const to = nodeMap.get(edge.to);
                 if (!from || !to) return null;
-                const visual = getEdgeVisual(edge, from, to, selectedNodeId, upstreamHighlight);
-                const path = getEdgePath(from, to);
+                const fromForPath = getNodeForEdgePath(from);
+                const toForPath = getNodeForEdgePath(to);
+                const visual = getEdgeVisual(edge, fromForPath, toForPath, selectedNodeId, upstreamHighlight);
+                const path = getEdgePath(fromForPath, toForPath);
                 return (
                   <g key={edge.id} opacity={visual.opacity}>
-                    <path
-                      d={path}
-                      fill="none"
-                      stroke={visual.glow}
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={visual.strokeWidth + 7}
-                      opacity={visual.glowOpacity}
-                    />
+                    {!skipEdgeGlow ? (
+                      <path
+                        d={path}
+                        fill="none"
+                        stroke={visual.glow}
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={visual.strokeWidth + 7}
+                        opacity={visual.glowOpacity}
+                      />
+                    ) : null}
                     <path
                       d={path}
                       fill="none"
@@ -2808,7 +2985,7 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
               })}
             </svg>
 
-            {activeProject.nodes.map((node) => {
+            {visibleNodes.map((node) => {
               const imageSrc = node.type === "image" ? getImageNodeSrc(node) : "";
               const nodeProgress = getNodeProgress(node);
               const nodeProgressMessage = node.progressMessage || getStatusLabel(node.status);
@@ -2817,30 +2994,34 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
               const isSelectedImageNode = isSelected && node.type === "image";
               const isCompareSelected = compareNodeIds.includes(node.id);
               const upstreamColor = isSelected ? undefined : upstreamHighlight.nodeColors.get(node.id);
+              const nodeRenderHeight = getNodeRenderHeight(node);
+              const shouldDeferImage = node.type === "image" && node.status === "success" && imageSrc && !isSelected && deferImagePreviews;
               return (
                 <article
                   key={node.id}
                   data-canvas-node="true"
                   className={cn(
-                    "absolute overflow-hidden rounded-[20px] border bg-white shadow-[0_18px_70px_-44px_rgba(15,23,42,0.55)] transition",
+                    "absolute overflow-hidden rounded-[20px] border bg-white will-change-transform",
+                    isLiteCanvas ? "shadow-none transition-none" : "shadow-[0_18px_70px_-44px_rgba(15,23,42,0.55)] transition",
                     isSelectedImageNode
-                      ? "border-blue-500 ring-4 ring-blue-500/25 shadow-[0_24px_90px_-36px_rgba(37,99,235,0.55)]"
+                      ? cn("border-blue-500 ring-4 ring-blue-500/25", isLiteCanvas ? "" : "shadow-[0_24px_90px_-36px_rgba(37,99,235,0.55)]")
                       : isGroupSelected
-                        ? "border-rose-500 ring-4 ring-rose-500/20 shadow-[0_24px_90px_-36px_rgba(244,63,94,0.35)]"
+                        ? cn("border-rose-500 ring-4 ring-rose-500/20", isLiteCanvas ? "" : "shadow-[0_24px_90px_-36px_rgba(244,63,94,0.35)]")
                       : isSelected
                         ? "border-stone-950 ring-4 ring-stone-950/10"
                         : "border-stone-200",
                   )}
                   style={{
-                    left: node.x,
-                    top: node.y,
+                    left: 0,
+                    top: 0,
                     width: node.width,
-                    minHeight: node.height,
+                    minHeight: nodeRenderHeight,
+                    transform: `translate3d(${node.x}px, ${node.y}px, 0)`,
                     ...(upstreamColor
                       ? {
                           borderColor: upstreamColor,
                           borderWidth: 2,
-                          boxShadow: `0 0 0 3px ${upstreamHighlight.glow}, 0 18px 70px -44px rgba(15,23,42,0.55)`,
+                          boxShadow: isLiteCanvas ? `0 0 0 3px ${upstreamHighlight.glow}` : `0 0 0 3px ${upstreamHighlight.glow}, 0 18px 70px -44px rgba(15,23,42,0.55)`,
                         }
                       : {}),
                   }}
@@ -2896,10 +3077,19 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
                               openImageLightbox(node.id);
                             }}
                           >
-                            <img src={imageSrc} alt={node.title} className="h-full w-full object-contain" draggable={false} />
-                            <span className="absolute right-2 top-2 inline-flex size-7 items-center justify-center rounded-full bg-black/45 text-white opacity-0 shadow-sm transition group-hover:opacity-100">
-                              <ZoomIn className="size-3.5" />
-                            </span>
+                            {shouldDeferImage ? (
+                              <div className="flex h-full w-full flex-col items-center justify-center gap-2 bg-stone-100 text-xs text-stone-400">
+                                <ImagePlus className="size-5" />
+                                <span>轻量预览</span>
+                              </div>
+                            ) : (
+                              <>
+                                <img src={imageSrc} alt={node.title} className="h-full w-full object-contain" draggable={false} loading="lazy" decoding="async" />
+                                <span className="absolute right-2 top-2 inline-flex size-7 items-center justify-center rounded-full bg-black/45 text-white opacity-0 shadow-sm transition group-hover:opacity-100">
+                                  <ZoomIn className="size-3.5" />
+                                </span>
+                              </>
+                            )}
                           </button>
                         ) : node.status === "error" || node.status === "cancelled" ? (
                           <div className="px-4 text-center text-sm leading-6 text-rose-600">{node.error || "任务失败"}</div>
@@ -2908,7 +3098,7 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
                             <LoaderCircle className="size-5 animate-spin" />
                             <span>{nodeProgressMessage}</span>
                             <div className="h-1.5 w-32 overflow-hidden rounded-full bg-white shadow-inner">
-                              <div className="h-full rounded-full bg-stone-700 transition-all" style={{ width: `${nodeProgress}%` }} />
+                              <div className={cn("h-full rounded-full bg-stone-700", isLiteCanvas ? "" : "transition-all")} style={{ width: `${nodeProgress}%` }} />
                             </div>
                             <span className="text-[11px] text-stone-400">{nodeProgress}%</span>
                           </div>

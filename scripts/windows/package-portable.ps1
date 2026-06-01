@@ -119,7 +119,9 @@ $portableConfigJson = @'
       "images": false
     }
   },
-  "image_account_concurrency": 3
+  "image_account_concurrency": 3,
+  "account_refresh_concurrency": 10,
+  "image_account_recheck_interval_secs": 300
 }
 '@
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)

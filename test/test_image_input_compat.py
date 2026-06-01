@@ -78,6 +78,7 @@ class ImageInputCompatTests(unittest.TestCase):
         app = FastAPI()
         with (
             mock.patch.object(ai_module, "check_request", return_value=None),
+            mock.patch.object(ai_module, "require_identity", return_value={"id": "admin", "name": "admin", "role": "admin"}),
             mock.patch.object(ai_module, "LoggedCall", FakeLoggedCall),
             mock.patch.object(ai_module.openai_v1_image_edit, "handle", side_effect=fake_handle),
         ):
@@ -90,6 +91,7 @@ class ImageInputCompatTests(unittest.TestCase):
                     "model": "gpt-image-2",
                     "prompt": "edit this",
                     "image": {"url": f"data:image/png;base64,{PNG_B64}", "type": "image_url"},
+                    "quality": "high",
                     "response_format": "b64_json",
                 },
             )
@@ -98,8 +100,39 @@ class ImageInputCompatTests(unittest.TestCase):
         self.assertEqual(response.json()["data"][0]["b64_json"], PNG_B64)
         self.assertEqual(captured_payload["prompt"], "edit this")
         self.assertEqual(captured_payload["model"], "gpt-image-2")
+        self.assertEqual(captured_payload["quality"], "high")
         self.assertEqual(len(captured_payload["images"]), 1)
         self.assertEqual(captured_payload["images"][0], (PNG_BYTES, "image_1.png", "image/png"))
+
+    def test_v1_image_edits_accepts_json_image_url_field(self):
+        captured_payload = {}
+
+        def fake_handle(payload):
+            captured_payload.update(payload)
+            return {"created": 1, "data": [{"b64_json": PNG_B64}]}
+
+        app = FastAPI()
+        with (
+            mock.patch.object(ai_module, "check_request", return_value=None),
+            mock.patch.object(ai_module, "require_identity", return_value={"id": "admin", "name": "admin", "role": "admin"}),
+            mock.patch.object(ai_module, "LoggedCall", FakeLoggedCall),
+            mock.patch.object(ai_module.openai_v1_image_edit, "handle", side_effect=fake_handle),
+        ):
+            app.include_router(ai_module.create_router())
+            client = TestClient(app)
+            response = client.post(
+                "/v1/images/edits",
+                headers=AUTH_HEADERS,
+                json={
+                    "model": "gpt-image-2",
+                    "prompt": "edit this",
+                    "image_url": f"data:image/png;base64,{PNG_B64}",
+                    "response_format": "b64_json",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(captured_payload["images"], [(PNG_BYTES, "image_1.png", "image/png")])
 
     def test_v1_image_edits_still_accepts_multipart_uploads(self):
         captured_payload = {}
@@ -111,6 +144,7 @@ class ImageInputCompatTests(unittest.TestCase):
         app = FastAPI()
         with (
             mock.patch.object(ai_module, "check_request", return_value=None),
+            mock.patch.object(ai_module, "require_identity", return_value={"id": "admin", "name": "admin", "role": "admin"}),
             mock.patch.object(ai_module, "LoggedCall", FakeLoggedCall),
             mock.patch.object(ai_module.openai_v1_image_edit, "handle", side_effect=fake_handle),
         ):

@@ -2,7 +2,12 @@ import { httpRequest, request } from "@/lib/request";
 
 export type AccountType = string;
 export type AccountStatus = "正常" | "限流" | "异常" | "禁用";
-export type ImageModel = "gpt-image-2" | "codex-gpt-image-2";
+export type ImageModel =
+  | "gpt-image-2"
+  | "codex-gpt-image-2"
+  | "plus-codex-gpt-image-2"
+  | "team-codex-gpt-image-2"
+  | "pro-codex-gpt-image-2";
 export type AuthRole = "admin" | "user";
 
 export type Account = {
@@ -11,6 +16,8 @@ export type Account = {
   status: AccountStatus;
   quota: number;
   image_quota_unknown?: boolean;
+  source_type?: string | null;
+  export_type?: string | null;
   email?: string | null;
   user_id?: string | null;
   limits_progress?: Array<{
@@ -79,11 +86,13 @@ export type SettingsConfig = {
     prompt?: string;
   };
   refresh_account_interval_minute?: number | string;
+  account_refresh_concurrency?: number | string;
   image_retention_days?: number | string;
   image_poll_timeout_secs?: number | string;
   image_unaccepted_task_timeout_secs?: number | string;
   image_stalled_result_timeout_secs?: number | string;
   image_account_concurrency?: number | string;
+  image_account_recheck_interval_secs?: number | string;
   image_pool_failover_enabled?: boolean;
   image_pool_max_attempts?: number | string;
   image_account_failure_cooldown_secs?: number | string;
@@ -352,7 +361,7 @@ export async function updateAccount(
   });
 }
 
-export async function generateImage(prompt: string, model?: ImageModel, size?: string) {
+export async function generateImage(prompt: string, model?: ImageModel, size?: string, quality?: string) {
   return httpRequest<ImageResponse>(
     "/v1/images/generations",
     {
@@ -361,6 +370,7 @@ export async function generateImage(prompt: string, model?: ImageModel, size?: s
         prompt,
         ...(model ? { model } : {}),
         ...(size ? { size } : {}),
+        ...(quality ? { quality } : {}),
         n: 1,
         response_format: "b64_json",
       },
@@ -368,7 +378,7 @@ export async function generateImage(prompt: string, model?: ImageModel, size?: s
   );
 }
 
-export async function editImage(files: File | File[], prompt: string, model?: ImageModel, size?: string) {
+export async function editImage(files: File | File[], prompt: string, model?: ImageModel, size?: string, quality?: string) {
   const formData = new FormData();
   const uploadFiles = Array.isArray(files) ? files : [files];
 
@@ -382,6 +392,9 @@ export async function editImage(files: File | File[], prompt: string, model?: Im
   if (size) {
     formData.append("size", size);
   }
+  if (quality) {
+    formData.append("quality", quality);
+  }
   formData.append("n", "1");
 
   return httpRequest<ImageResponse>(
@@ -393,7 +406,7 @@ export async function editImage(files: File | File[], prompt: string, model?: Im
   );
 }
 
-export async function createImageGenerationTask(clientTaskId: string, prompt: string, model?: ImageModel, size?: string) {
+export async function createImageGenerationTask(clientTaskId: string, prompt: string, model?: ImageModel, size?: string, quality?: string) {
   return httpRequest<ImageTask>("/api/image-tasks/generations", {
     method: "POST",
     body: {
@@ -401,6 +414,7 @@ export async function createImageGenerationTask(clientTaskId: string, prompt: st
       prompt,
       ...(model ? { model } : {}),
       ...(size ? { size } : {}),
+      ...(quality ? { quality } : {}),
     },
   });
 }
@@ -411,6 +425,7 @@ export async function createImageEditTask(
   prompt: string,
   model?: ImageModel,
   size?: string,
+  quality?: string,
 ) {
   const formData = new FormData();
   const uploadFiles = Array.isArray(files) ? files : [files];
@@ -426,6 +441,9 @@ export async function createImageEditTask(
   if (size) {
     formData.append("size", size);
   }
+  if (quality) {
+    formData.append("quality", quality);
+  }
 
   return httpRequest<ImageTask>("/api/image-tasks/edits", {
     method: "POST",
@@ -439,6 +457,7 @@ export async function createImageEditTaskFromSource(
   prompt: string,
   model?: ImageModel,
   size?: string,
+  quality?: string,
 ) {
   return httpRequest<ImageTask>("/api/image-tasks/edits", {
     method: "POST",
@@ -448,6 +467,7 @@ export async function createImageEditTaskFromSource(
       prompt,
       ...(model ? { model } : {}),
       ...(size ? { size } : {}),
+      ...(quality ? { quality } : {}),
     },
   });
 }
@@ -458,6 +478,7 @@ export async function createImageEditTaskFromSources(
   prompt: string,
   model?: ImageModel,
   size?: string,
+  quality?: string,
 ) {
   return httpRequest<ImageTask>("/api/image-tasks/edits", {
     method: "POST",
@@ -467,6 +488,7 @@ export async function createImageEditTaskFromSources(
       prompt,
       ...(model ? { model } : {}),
       ...(size ? { size } : {}),
+      ...(quality ? { quality } : {}),
     },
   });
 }

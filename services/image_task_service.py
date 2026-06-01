@@ -10,7 +10,7 @@ from typing import Any
 
 from services.config import DATA_DIR, config
 from services.content_filter import request_text
-from services.log_service import LOG_TYPE_CALL, log_service
+from services.log_service import LOG_TYPE_CALL, log_service, _collect_usage
 from services.protocol import openai_v1_image_edit, openai_v1_image_generations
 
 TASK_STATUS_QUEUED = "queued"
@@ -153,12 +153,14 @@ class ImageTaskService:
         model: str,
         size: str | None,
         base_url: str,
+        quality: str = "auto",
     ) -> dict[str, Any]:
         payload = {
             "prompt": prompt,
             "model": model,
             "n": 1,
             "size": size,
+            "quality": quality,
             "response_format": "url",
             "base_url": base_url,
             "owner_id": _owner_id(identity),
@@ -175,6 +177,7 @@ class ImageTaskService:
         size: str | None,
         base_url: str,
         images: list[tuple[bytes, str, str]],
+        quality: str = "auto",
     ) -> dict[str, Any]:
         payload = {
             "prompt": prompt,
@@ -182,6 +185,7 @@ class ImageTaskService:
             "model": model,
             "n": 1,
             "size": size,
+            "quality": quality,
             "response_format": "url",
             "base_url": base_url,
             "owner_id": _owner_id(identity),
@@ -343,10 +347,11 @@ class ImageTaskService:
                     mode,
                     model,
                     started,
-                    "调用完成",
-                    request_preview=request_text(payload.get("prompt")),
-                    urls=[],
-                )
+                "调用完成",
+                request_preview=request_text(payload.get("prompt")),
+                urls=[],
+                usage=result.get("usage"),
+            )
                 return
             if not isinstance(data, list) or not data:
                 message = _clean(result.get("message")) or "image task returned no image data"
@@ -360,6 +365,7 @@ class ImageTaskService:
                 "调用完成",
                 request_preview=request_text(payload.get("prompt")),
                 urls=_collect_image_urls(data),
+                usage=result.get("usage"),
             )
         except Exception as exc:
             if self._is_cancelled(key):
@@ -389,6 +395,7 @@ class ImageTaskService:
         status: str = "success",
         error: str = "",
         urls: list[str] | None = None,
+        usage: object = None,
     ) -> None:
         endpoint = "/api/image-tasks/reverse-prompts" if mode == "reverse_prompt" else "/v1/images/edits" if mode == "edit" else "/v1/images/generations"
         summary_prefix = "反推提示词" if mode == "reverse_prompt" else "图生图" if mode == "edit" else "文生图"
@@ -409,6 +416,9 @@ class ImageTaskService:
             detail["error"] = error
         if urls:
             detail["urls"] = list(dict.fromkeys(urls))
+        token_usage = _collect_usage({"usage": usage} if isinstance(usage, dict) else None)
+        if token_usage:
+            detail["usage"] = token_usage
         try:
             log_service.add(LOG_TYPE_CALL, f"{summary_prefix}{suffix}", detail)
         except Exception:
@@ -422,6 +432,7 @@ class ImageTaskService:
                 status=status,
                 duration_ms=int(detail["duration_ms"]),
                 generated_images=len(list(dict.fromkeys(urls or []))),
+                token_usage=token_usage,
             )
         except Exception:
             pass

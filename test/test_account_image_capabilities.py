@@ -6,6 +6,7 @@ import tempfile
 import time
 import types
 import unittest
+import uuid
 from datetime import datetime
 from pathlib import Path
 
@@ -28,15 +29,67 @@ helper_stub = types.ModuleType("utils.helper")
 helper_stub.anthropic_sse_stream = lambda items: items
 helper_stub.sse_json_stream = lambda items: items
 helper_stub.anonymize_token = lambda token: "token:" + str(abs(hash(token)))[:8]
-sys.modules.setdefault("fastapi", fastapi_stub)
-sys.modules.setdefault("fastapi.concurrency", concurrency_stub)
-sys.modules.setdefault("fastapi.responses", responses_stub)
-sys.modules.setdefault("utils.helper", helper_stub)
+helper_stub.ensure_ok = lambda response, context: None
+helper_stub.iter_sse_payloads = lambda response: iter(())
+helper_stub.new_uuid = lambda: str(uuid.uuid4())
+helper_stub.BASE_IMAGE_MODELS = {"gpt-image-2", "codex-gpt-image-2"}
+helper_stub.IMAGE_MODEL_PLAN_TYPES = ("plus", "team", "pro")
+helper_stub.CODEX_IMAGE_MODEL = "codex-gpt-image-2"
+helper_stub.IMAGE_MODELS = {
+    "gpt-image-2",
+    "codex-gpt-image-2",
+    "plus-codex-gpt-image-2",
+    "team-codex-gpt-image-2",
+    "pro-codex-gpt-image-2",
+}
+
+
+def _split_image_model(model):
+    normalized = str(model or "").strip().lower()
+    if normalized in helper_stub.BASE_IMAGE_MODELS:
+        return None, normalized
+    for plan_type in helper_stub.IMAGE_MODEL_PLAN_TYPES:
+        prefix = f"{plan_type}-"
+        if normalized.startswith(prefix) and normalized[len(prefix):] == helper_stub.CODEX_IMAGE_MODEL:
+            return plan_type, helper_stub.CODEX_IMAGE_MODEL
+    return None, None
+
+
+helper_stub.split_image_model = _split_image_model
+helper_stub.is_supported_image_model = lambda model: _split_image_model(model)[1] is not None
+helper_stub.is_codex_image_model = lambda model: _split_image_model(model)[1] == helper_stub.CODEX_IMAGE_MODEL
+helper_stub.extract_image_from_message_content = lambda content: []
+helper_stub.build_chat_image_markdown_content = lambda result: "Image generation completed."
+helper_stub.extract_chat_image = lambda body: []
+helper_stub.extract_chat_prompt = lambda body: str(body.get("prompt") or "").strip() if isinstance(body, dict) else ""
+helper_stub.is_image_chat_request = lambda body: isinstance(body, dict) and helper_stub.is_supported_image_model(body.get("model"))
+helper_stub.parse_image_count = lambda value: max(1, min(4, int(value or 1)))
+helper_stub.decode_image_source = lambda item: None
+helper_stub.extract_response_prompt = lambda value: str(value or "").strip() if isinstance(value, str) else ""
+helper_stub.has_response_image_generation_tool = lambda body: any(
+    isinstance(tool, dict) and str(tool.get("type") or "").strip() == "image_generation"
+    for tool in (body.get("tools") if isinstance(body, dict) and isinstance(body.get("tools"), list) else [])
+)
+try:
+    import fastapi as _real_fastapi  # noqa: F401
+    import fastapi.concurrency as _real_fastapi_concurrency  # noqa: F401
+    import fastapi.responses as _real_fastapi_responses  # noqa: F401
+    import utils.helper as _real_helper  # noqa: F401
+except Exception:
+    sys.modules.setdefault("fastapi", fastapi_stub)
+    sys.modules.setdefault("fastapi.concurrency", concurrency_stub)
+    sys.modules.setdefault("fastapi.responses", responses_stub)
+    sys.modules.setdefault("utils.helper", helper_stub)
 
 from services.account_service import AccountService
 from services.auth_service import AuthService
 from services.storage.json_storage import JSONStorageBackend
-from utils.helper import anonymize_token
+from utils.helper import anonymize_token, split_image_model
+
+
+def tearDownModule() -> None:
+    if sys.modules.get("utils.helper") is helper_stub:
+        sys.modules.pop("utils.helper", None)
 
 
 class AccountCapabilityTests(unittest.TestCase):
@@ -57,6 +110,41 @@ class AccountCapabilityTests(unittest.TestCase):
             service = AccountService(JSONStorageBackend(Path(tmp_dir) / "accounts.json"))
             self.assertEqual(service._normalize_account_type("prolite"), "ProLite")
             self.assertEqual(service._normalize_account_type("pro_lite"), "ProLite")
+
+    def test_split_image_model_supports_plan_type_prefix(self) -> None:
+        self.assertEqual(split_image_model("gpt-image-2"), (None, "gpt-image-2"))
+        self.assertEqual(split_image_model("plus-codex-gpt-image-2"), ("plus", "codex-gpt-image-2"))
+        self.assertEqual(split_image_model("team-codex-gpt-image-2"), ("team", "codex-gpt-image-2"))
+        self.assertEqual(split_image_model("pro-codex-gpt-image-2"), ("pro", "codex-gpt-image-2"))
+        self.assertEqual(split_image_model("plus-gpt-image-2"), (None, None))
+        self.assertEqual(split_image_model("unknown-image-model"), (None, None))
+
+    def test_get_available_access_token_filters_by_plan_and_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            service = AccountService(JSONStorageBackend(Path(tmp_dir) / "accounts.json"))
+            service.replace_accounts([
+                {"access_token": "web-plus", "type": "Plus", "source_type": "web", "status": "姝ｅ父", "quota": 2},
+                {"access_token": "codex-team", "type": "Team", "source_type": "codex", "status": "姝ｅ父", "quota": 2},
+                {"access_token": "codex-pro", "type": "Pro", "source_type": "codex", "status": "姝ｅ父", "quota": 2},
+            ])
+            service.fetch_remote_info = lambda token, _event="": service.get_account(token)  # type: ignore[method-assign]
+
+            selected = service.get_available_access_token(plan_type="team", source_type="codex")
+
+            self.assertEqual(selected, "codex-team")
+
+    def test_codex_model_can_use_any_paid_codex_plan_when_unprefixed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            service = AccountService(JSONStorageBackend(Path(tmp_dir) / "accounts.json"))
+            service.replace_accounts([
+                {"access_token": "codex-free", "type": "free", "source_type": "codex", "status": "姝ｅ父", "quota": 2},
+                {"access_token": "codex-plus", "type": "Plus", "source_type": "codex", "status": "姝ｅ父", "quota": 2},
+            ])
+            service.fetch_remote_info = lambda token, _event="": service.get_account(token)  # type: ignore[method-assign]
+
+            selected = service.get_available_access_token(source_type="codex", plan_types=("plus", "team", "pro"))
+
+            self.assertEqual(selected, "codex-plus")
 
     def test_search_account_type_ignores_unrelated_scalar_values(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -138,6 +226,25 @@ class AccountCapabilityTests(unittest.TestCase):
             self.assertEqual(service._image_inflight.get("strong-token"), 1)
             self.assertTrue(service.get_account("strong-token")["last_selected_at"])
 
+    def test_recently_refreshed_image_token_skips_remote_recheck(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            service = AccountService(JSONStorageBackend(Path(tmp_dir) / "accounts.json"))
+            service.add_accounts(["token-1"])
+            service.update_account(
+                "token-1",
+                {
+                    "status": "姝ｅ父",
+                    "quota": 2,
+                    "last_refreshed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                },
+            )
+            service.fetch_remote_info = lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("should not recheck"))  # type: ignore[method-assign]
+
+            selected = service.get_available_access_token()
+
+            self.assertEqual(selected, "token-1")
+            self.assertEqual(service._image_inflight.get("token-1"), 1)
+
     def test_failed_image_result_records_failure_reason_for_scoring(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             service = AccountService(JSONStorageBackend(Path(tmp_dir) / "accounts.json"))
@@ -176,6 +283,51 @@ class AccountCapabilityTests(unittest.TestCase):
             self.assertEqual(job["failed"], 1)
             self.assertEqual(len(job["errors"]), 1)
             self.assertEqual(len(job["items"]), 2)
+
+    def test_refresh_accounts_batches_account_saves(self) -> None:
+        class CountingStorage(JSONStorageBackend):
+            def __init__(self, path: Path):
+                super().__init__(path)
+                self.save_count = 0
+
+            def save_accounts(self, accounts):
+                self.save_count += 1
+                super().save_accounts(accounts)
+
+        backend_module = types.ModuleType("services.openai_backend_api")
+
+        class InvalidAccessTokenError(Exception):
+            pass
+
+        class OpenAIBackendAPI:
+            def __init__(self, access_token: str):
+                self.access_token = access_token
+
+            def get_user_info(self):
+                return {"status": "姝ｅ父", "quota": 3, "email": f"{self.access_token}@example.com"}
+
+        backend_module.InvalidAccessTokenError = InvalidAccessTokenError
+        backend_module.OpenAIBackendAPI = OpenAIBackendAPI
+
+        previous_backend = sys.modules.get("services.openai_backend_api")
+        sys.modules["services.openai_backend_api"] = backend_module
+        try:
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                storage = CountingStorage(Path(tmp_dir) / "accounts.json")
+                service = AccountService(storage)
+                service.add_accounts(["token-1", "token-2", "token-3"])
+                storage.save_count = 0
+
+                result = service.refresh_accounts(["token-1", "token-2", "token-3"])
+
+                self.assertEqual(result["refreshed"], 3)
+                self.assertEqual(storage.save_count, 1)
+                self.assertEqual(service.get_account("token-1")["email"], "token-1@example.com")
+        finally:
+            if previous_backend is None:
+                sys.modules.pop("services.openai_backend_api", None)
+            else:
+                sys.modules["services.openai_backend_api"] = previous_backend
 
 
 class TokenLogTests(unittest.TestCase):

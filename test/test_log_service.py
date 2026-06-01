@@ -20,10 +20,16 @@ responses_stub.StreamingResponse = object
 helper_stub = types.ModuleType("utils.helper")
 helper_stub.anthropic_sse_stream = lambda items: items
 helper_stub.sse_json_stream = lambda items: items
-sys.modules.setdefault("fastapi", fastapi_stub)
-sys.modules.setdefault("fastapi.concurrency", concurrency_stub)
-sys.modules.setdefault("fastapi.responses", responses_stub)
-sys.modules.setdefault("utils.helper", helper_stub)
+try:
+    import fastapi as _real_fastapi  # noqa: F401
+    import fastapi.concurrency as _real_fastapi_concurrency  # noqa: F401
+    import fastapi.responses as _real_fastapi_responses  # noqa: F401
+    import utils.helper as _real_helper  # noqa: F401
+except Exception:
+    sys.modules.setdefault("fastapi", fastapi_stub)
+    sys.modules.setdefault("fastapi.concurrency", concurrency_stub)
+    sys.modules.setdefault("fastapi.responses", responses_stub)
+    sys.modules.setdefault("utils.helper", helper_stub)
 
 from services.log_service import LogService
 

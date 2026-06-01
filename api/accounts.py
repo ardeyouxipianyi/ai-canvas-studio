@@ -37,6 +37,7 @@ class UserKeyUpdateRequest(BaseModel):
 class AccountCreateRequest(BaseModel):
     tokens: list[str] = Field(default_factory=list)
     background_refresh: bool = False
+    source_type: str = "web"
 
 
 class AccountDeleteRequest(BaseModel):
@@ -153,7 +154,7 @@ def create_router() -> APIRouter:
         tokens = [str(token or "").strip() for token in body.tokens if str(token or "").strip()]
         if not tokens:
             raise HTTPException(status_code=400, detail={"error": "tokens is required"})
-        result = account_service.add_accounts(tokens)
+        result = account_service.add_accounts(tokens, source_type=body.source_type)
         if body.background_refresh:
             refresh_job = account_service.start_refresh_job(tokens)
             return {

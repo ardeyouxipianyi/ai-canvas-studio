@@ -49,6 +49,16 @@ DEFAULT_BACKUP_INCLUDE = {
     "auth_keys_snapshot": True,
     "images": False,
 }
+DEFAULT_CHAT_COMPLETION_CACHE = {
+    "enabled": True,
+    "ttl_seconds": 60,
+    "max_entries": 256,
+    "dedupe_inflight": True,
+    "stream_cache": True,
+    "normalize_messages": True,
+    "drop_adjacent_duplicates": True,
+    "drop_assistant_history": False,
+}
 DEFAULT_REVERSE_PROMPT_INSTRUCTION = (
     "请根据这张图片反推出可用于 AI 画图的中文提示词。"
     "只输出一段可直接用于生图的提示词，尽量包含主体、构图、风格、光线、色彩、细节、镜头与氛围；"
@@ -111,6 +121,43 @@ def _normalize_backup_state(value: object) -> dict[str, object]:
         "last_status": str(source.get("last_status") or "idle").strip() or "idle",
         "last_error": str(source.get("last_error") or "").strip() or None,
         "last_object_key": str(source.get("last_object_key") or "").strip() or None,
+    }
+
+
+def _normalize_chat_completion_cache_settings(value: object) -> dict[str, object]:
+    source = value if isinstance(value, dict) else {}
+    return {
+        "enabled": _normalize_bool(source.get("enabled"), bool(DEFAULT_CHAT_COMPLETION_CACHE["enabled"])),
+        "ttl_seconds": _normalize_positive_int(
+            source.get("ttl_seconds"),
+            int(DEFAULT_CHAT_COMPLETION_CACHE["ttl_seconds"]),
+            0,
+        ),
+        "max_entries": _normalize_positive_int(
+            source.get("max_entries"),
+            int(DEFAULT_CHAT_COMPLETION_CACHE["max_entries"]),
+            1,
+        ),
+        "dedupe_inflight": _normalize_bool(
+            source.get("dedupe_inflight"),
+            bool(DEFAULT_CHAT_COMPLETION_CACHE["dedupe_inflight"]),
+        ),
+        "stream_cache": _normalize_bool(
+            source.get("stream_cache"),
+            bool(DEFAULT_CHAT_COMPLETION_CACHE["stream_cache"]),
+        ),
+        "normalize_messages": _normalize_bool(
+            source.get("normalize_messages"),
+            bool(DEFAULT_CHAT_COMPLETION_CACHE["normalize_messages"]),
+        ),
+        "drop_adjacent_duplicates": _normalize_bool(
+            source.get("drop_adjacent_duplicates"),
+            bool(DEFAULT_CHAT_COMPLETION_CACHE["drop_adjacent_duplicates"]),
+        ),
+        "drop_assistant_history": _normalize_bool(
+            source.get("drop_assistant_history"),
+            bool(DEFAULT_CHAT_COMPLETION_CACHE["drop_assistant_history"]),
+        ),
     }
 
 
@@ -377,6 +424,20 @@ class ConfigStore:
             return 3
 
     @property
+    def account_refresh_concurrency(self) -> int:
+        try:
+            return min(100, max(1, int(self.data.get("account_refresh_concurrency", 10))))
+        except (TypeError, ValueError):
+            return 10
+
+    @property
+    def image_account_recheck_interval_secs(self) -> int:
+        try:
+            return max(0, int(self.data.get("image_account_recheck_interval_secs", 300)))
+        except (TypeError, ValueError):
+            return 300
+
+    @property
     def image_pool_failover_enabled(self) -> bool:
         value = self.data.get("image_pool_failover_enabled", True)
         if isinstance(value, str):
@@ -494,6 +555,8 @@ class ConfigStore:
         data["image_unaccepted_task_timeout_secs"] = self.image_unaccepted_task_timeout_secs
         data["image_stalled_result_timeout_secs"] = self.image_stalled_result_timeout_secs
         data["image_account_concurrency"] = self.image_account_concurrency
+        data["account_refresh_concurrency"] = self.account_refresh_concurrency
+        data["image_account_recheck_interval_secs"] = self.image_account_recheck_interval_secs
         data["image_pool_failover_enabled"] = self.image_pool_failover_enabled
         data["image_pool_max_attempts"] = self.image_pool_max_attempts
         data["image_account_failure_cooldown_secs"] = self.image_account_failure_cooldown_secs
@@ -508,6 +571,7 @@ class ConfigStore:
         data["admin_auth_key_editable"] = self.admin_auth_key_editable
         data["setup_required"] = self.setup_required
         data["backup"] = self.get_backup_settings()
+        data["chat_completion_cache"] = self.get_chat_completion_cache_settings()
         data.pop("auth-key", None)
         data.pop(AUTH_KEY_HASH_FIELD, None)
         return data
@@ -525,6 +589,10 @@ class ConfigStore:
         next_data.update(updates)
         if "backup" in next_data:
             next_data["backup"] = _normalize_backup_settings(next_data.get("backup"))
+        if "chat_completion_cache" in next_data:
+            next_data["chat_completion_cache"] = _normalize_chat_completion_cache_settings(
+                next_data.get("chat_completion_cache")
+            )
         next_data.pop("backup_state", None)
         self.data = next_data
         self._save()
@@ -577,6 +645,9 @@ class ConfigStore:
 
     def get_backup_settings(self) -> dict[str, object]:
         return _normalize_backup_settings(self.data.get("backup"))
+
+    def get_chat_completion_cache_settings(self) -> dict[str, object]:
+        return _normalize_chat_completion_cache_settings(self.data.get("chat_completion_cache"))
 
     def get_storage_backend(self) -> StorageBackend:
         """获取存储后端实例（单例）"""
