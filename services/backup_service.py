@@ -267,13 +267,11 @@ def _normalize_transfer_include(value: object) -> dict[str, bool]:
     source = value if isinstance(value, dict) else {}
     keys = (
         "config",
-        "cpa",
-        "sub2api",
         "logs",
         "image_tasks",
+        "image_providers",
         "image_conversations",
         "image_canvas",
-        "accounts_snapshot",
         "auth_keys_snapshot",
         "images",
     )
@@ -616,7 +614,7 @@ class BackupService:
             trigger="manual-export",
         )
         timestamp = _utc_now().strftime("%Y%m%dT%H%M%SZ")
-        name = f"chatgpt2api-data-{timestamp}.tar.gz"
+        name = f"ai-canvas-studio-data-{timestamp}.tar.gz"
         return {
             "name": name,
             "content_type": "application/gzip",
@@ -671,18 +669,14 @@ class BackupService:
                 mark("config")
 
         file_targets = {
-            "cpa": (DATA_DIR / "cpa_config.json", "data/cpa_config.json"),
-            "sub2api": (DATA_DIR / "sub2api_config.json", "data/sub2api_config.json"),
             "logs": (DATA_DIR / "logs.jsonl", "data/logs.jsonl"),
             "image_tasks": (DATA_DIR / "image_tasks.json", "data/image_tasks.json"),
+            "image_providers": (DATA_DIR / "image_providers.json", "data/image_providers.json"),
             "image_conversations": (DATA_DIR / "image_conversations.json", "data/image_conversations.json"),
             "image_canvas": (DATA_DIR / "image_canvas_projects.json", "data/image_canvas_projects.json"),
         }
         for key, (target, archive_name) in file_targets.items():
             if not selected.get(key):
-                continue
-            if archive_redacted and key in {"cpa", "sub2api"}:
-                skip(key)
                 continue
             raw = members.get(archive_name)
             if raw is None:
@@ -693,20 +687,10 @@ class BackupService:
             if key == "image_conversations":
                 from services.image_conversation_service import image_conversation_service
                 image_conversation_service.reload()
+            if key == "image_providers":
+                from services.image_provider_service import image_provider_service
+                image_provider_service.reload()
             mark(key)
-
-        if selected.get("accounts_snapshot"):
-            raw = members.get("snapshots/accounts.json")
-            if raw is None:
-                skip("accounts_snapshot")
-            elif archive_redacted:
-                skip("accounts_snapshot")
-            else:
-                parsed = _json_object_from_bytes(raw)
-                if not isinstance(parsed, list):
-                    raise BackupError("账号快照格式不正确")
-                from services.account_service import account_service
-                mark("accounts_snapshot", account_service.replace_accounts(parsed))
 
         if selected.get("auth_keys_snapshot"):
             raw = members.get("snapshots/auth_keys.json")
@@ -966,25 +950,16 @@ class BackupService:
             self._add_bytes_to_archive(archive, "backup-metadata.json", _json_bytes(metadata))
             if include.get("config"):
                 add_json_or_raw(archive, CONFIG_FILE, "config.json")
-            if include.get("cpa"):
-                add_json_or_raw(archive, DATA_DIR / "cpa_config.json", "data/cpa_config.json")
-            if include.get("sub2api"):
-                add_json_or_raw(archive, DATA_DIR / "sub2api_config.json", "data/sub2api_config.json")
             if include.get("logs"):
                 add_jsonl_or_raw(archive, DATA_DIR / "logs.jsonl", "data/logs.jsonl")
             if include.get("image_tasks"):
                 add_json_or_raw(archive, DATA_DIR / "image_tasks.json", "data/image_tasks.json")
+            if include.get("image_providers"):
+                add_json_or_raw(archive, DATA_DIR / "image_providers.json", "data/image_providers.json")
             if include.get("image_conversations"):
                 add_json_or_raw(archive, DATA_DIR / "image_conversations.json", "data/image_conversations.json")
             if include.get("image_canvas"):
                 add_json_or_raw(archive, DATA_DIR / "image_canvas_projects.json", "data/image_canvas_projects.json")
-            if include.get("accounts_snapshot"):
-                accounts = config.get_storage_backend().load_accounts()
-                self._add_bytes_to_archive(
-                    archive,
-                    "snapshots/accounts.json",
-                    _json_bytes(accounts if include_sensitive else _redact_sensitive_data(accounts)),
-                )
             if include.get("auth_keys_snapshot"):
                 auth_keys = config.get_storage_backend().load_auth_keys()
                 self._add_bytes_to_archive(

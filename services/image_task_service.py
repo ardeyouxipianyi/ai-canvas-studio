@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import threading
 import time
@@ -7,11 +8,15 @@ from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
+
+from curl_cffi import requests
 
 from services.config import DATA_DIR, config
 from services.content_filter import request_text
+from services.image_provider_service import ProviderRequest, image_provider_service
 from services.log_service import LOG_TYPE_CALL, log_service, _collect_usage
-from services.protocol import openai_v1_image_edit, openai_v1_image_generations
+from services.protocol.conversation import save_image_bytes
 
 TASK_STATUS_QUEUED = "queued"
 TASK_STATUS_RUNNING = "running"
@@ -20,6 +25,36 @@ TASK_STATUS_ERROR = "error"
 TASK_STATUS_CANCELLED = "cancelled"
 TERMINAL_STATUSES = {TASK_STATUS_SUCCESS, TASK_STATUS_ERROR, TASK_STATUS_CANCELLED}
 UNFINISHED_STATUSES = {TASK_STATUS_QUEUED, TASK_STATUS_RUNNING}
+TASK_STAGE_QUEUED = "queued"
+TASK_STAGE_RUNNING = "running"
+TASK_STAGE_ARCHIVING = "archiving"
+TASK_STAGE_SUCCESS = "success"
+TASK_STAGE_ERROR = "error"
+TASK_STAGE_CANCELLED = "cancelled"
+RETRYABLE_ERROR_MARKERS = (
+    "timeout",
+    "timed out",
+    "connection",
+    "network",
+    "temporarily",
+    "502",
+    "503",
+    "504",
+    "5xx",
+    "server error",
+)
+NON_RETRYABLE_ERROR_MARKERS = (
+    "401",
+    "403",
+    "400",
+    "quota",
+    "no available image quota",
+    "invalid",
+    "api key",
+    "not support",
+    "disabled",
+    "required",
+)
 
 
 def _now_iso() -> str:
@@ -99,19 +134,91 @@ def _collect_image_urls(data: list[Any]) -> list[str]:
     return urls
 
 
+def _is_retryable_error(error: Exception) -> bool:
+    message = str(error or "").lower()
+    if any(marker in message for marker in NON_RETRYABLE_ERROR_MARKERS):
+        return False
+    return any(marker in message for marker in RETRYABLE_ERROR_MARKERS)
+
+
+def _decode_b64_image(value: str) -> bytes:
+    candidate = _clean(value)
+    if candidate.startswith("data:") and "," in candidate:
+        candidate = candidate.split(",", 1)[1]
+    try:
+        return base64.b64decode(candidate, validate=True)
+    except Exception as exc:
+        raise RuntimeError("provider returned invalid base64 image data") from exc
+
+
+def _is_http_url(value: str) -> bool:
+    parsed = urlparse(_clean(value))
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
+def _is_local_image_url(url: str, base_url: str) -> bool:
+    base = _clean(base_url).rstrip("/")
+    return bool(base and _clean(url).startswith(f"{base}/images/"))
+
+
+def _download_image_url(url: str) -> bytes:
+    response = requests.get(url, timeout=120)
+    if response.status_code >= 400:
+        raise RuntimeError(f"failed to download provider image: HTTP {response.status_code}")
+    content = bytes(response.content or b"")
+    if not content:
+        raise RuntimeError("failed to download provider image: empty response")
+    return content
+
+
+def archive_image_outputs(data: list[Any], base_url: str, owner_id: str) -> list[Any]:
+    archived_items: list[Any] = []
+    for item in data:
+        if not isinstance(item, dict):
+            archived_items.append(item)
+            continue
+        archived = dict(item)
+        image_data: bytes | None = None
+        b64_json = _clean(archived.get("b64_json"))
+        url = _clean(archived.get("url"))
+        if b64_json:
+            image_data = _decode_b64_image(b64_json)
+        elif url and _is_http_url(url) and not _is_local_image_url(url, base_url):
+            image_data = _download_image_url(url)
+            archived["original_url"] = url
+        if image_data:
+            archived["url"] = save_image_bytes(image_data, base_url, owner_id)
+            archived.pop("b64_json", None)
+        archived_items.append(archived)
+    return archived_items
+
+
 def _public_task(task: dict[str, Any]) -> dict[str, Any]:
     progress, progress_message = _perceived_progress(task)
     item = {
         "id": task.get("id"),
         "status": task.get("status"),
         "mode": task.get("mode"),
+        "provider_id": task.get("provider_id"),
+        "provider_name": task.get("provider_name"),
+        "provider_type": task.get("provider_type"),
         "model": task.get("model"),
         "size": task.get("size"),
+        "quality": task.get("quality"),
+        "stage": task.get("stage") or task.get("status"),
+        "attempt": int(task.get("attempt") or 0),
+        "duration_ms": int(task.get("duration_ms") or 0),
         "progress": progress,
         "progress_message": progress_message,
         "created_at": task.get("created_at"),
         "updated_at": task.get("updated_at"),
     }
+    if isinstance(task.get("usage"), dict):
+        item["usage"] = task.get("usage")
+    if int(task.get("image_width") or 0) > 0:
+        item["image_width"] = int(task.get("image_width") or 0)
+    if int(task.get("image_height") or 0) > 0:
+        item["image_height"] = int(task.get("image_height") or 0)
     if task.get("data") is not None:
         item["data"] = task.get("data")
     if task.get("error"):
@@ -126,16 +233,21 @@ class ImageTaskService:
         self,
         path: Path,
         *,
-        generation_handler: Callable[[dict[str, Any]], dict[str, Any]] = openai_v1_image_generations.handle,
-        edit_handler: Callable[[dict[str, Any]], dict[str, Any]] = openai_v1_image_edit.handle,
+        generation_handler: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+        edit_handler: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
         retention_days_getter: Callable[[], int] | None = None,
+        provider_service: Any | None = None,
+        image_archiver: Callable[[list[Any], str, str], list[Any]] | None = None,
     ):
         self.path = path
         self.generation_handler = generation_handler
         self.edit_handler = edit_handler
         self.retention_days_getter = retention_days_getter or (lambda: config.image_retention_days)
+        self.provider_service = provider_service or image_provider_service
+        self.image_archiver = image_archiver or archive_image_outputs
         self._lock = threading.RLock()
         self._tasks: dict[str, dict[str, Any]] = {}
+        self._provider_locks: dict[str, threading.Semaphore] = {}
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._lock:
             self._tasks = self._load_locked()
@@ -153,14 +265,19 @@ class ImageTaskService:
         model: str,
         size: str | None,
         base_url: str,
+        provider_id: str = "",
         quality: str = "auto",
     ) -> dict[str, Any]:
+        provider = self.provider_service.resolve_provider(provider_id)
         payload = {
             "prompt": prompt,
-            "model": model,
+            "provider_id": provider["id"],
+            "provider_name": provider["name"],
+            "provider_type": provider["type"],
+            "model": model or provider["default_model"],
             "n": 1,
-            "size": size,
-            "quality": quality,
+            "size": size or provider.get("default_size") or "",
+            "quality": quality or provider.get("default_quality") or "auto",
             "response_format": "url",
             "base_url": base_url,
             "owner_id": _owner_id(identity),
@@ -177,15 +294,23 @@ class ImageTaskService:
         size: str | None,
         base_url: str,
         images: list[tuple[bytes, str, str]],
+        provider_id: str = "",
         quality: str = "auto",
     ) -> dict[str, Any]:
+        provider = self.provider_service.resolve_provider(provider_id)
+        capabilities = provider.get("capabilities", {})
+        if not capabilities.get("edit"):
+            raise ValueError("Provider does not support image edits.")
         payload = {
             "prompt": prompt,
             "images": images,
-            "model": model,
+            "provider_id": provider["id"],
+            "provider_name": provider["name"],
+            "provider_type": provider["type"],
+            "model": model or provider["default_model"],
             "n": 1,
-            "size": size,
-            "quality": quality,
+            "size": size or provider.get("default_size") or "",
+            "quality": quality or provider.get("default_quality") or "auto",
             "response_format": "url",
             "base_url": base_url,
             "owner_id": _owner_id(identity),
@@ -201,11 +326,19 @@ class ImageTaskService:
         model: str,
         base_url: str,
         images: list[tuple[bytes, str, str]],
+        provider_id: str = "",
     ) -> dict[str, Any]:
+        provider = self.provider_service.resolve_provider(provider_id, purpose="reverse_prompt")
+        capabilities = provider.get("capabilities", {})
+        if not capabilities.get("reverse_prompt"):
+            raise ValueError("Provider does not support reverse prompt.")
         payload = {
             "prompt": prompt,
             "images": images,
-            "model": model,
+            "provider_id": provider["id"],
+            "provider_name": provider["name"],
+            "provider_type": provider["type"],
+            "model": model or provider.get("default_reverse_prompt_model") or provider["default_model"],
             "n": 1,
             "size": None,
             "response_format": "url",
@@ -256,6 +389,7 @@ class ImageTaskService:
                     unchanged.append(_public_task(task))
                     continue
                 task["status"] = TASK_STATUS_CANCELLED
+                task["stage"] = TASK_STAGE_CANCELLED
                 task["error"] = "任务已取消"
                 task["data"] = []
                 task["progress"] = 100
@@ -293,8 +427,15 @@ class ImageTaskService:
                 "owner_id": owner,
                 "status": TASK_STATUS_QUEUED,
                 "mode": mode,
+                "provider_id": _clean(payload.get("provider_id")),
+                "provider_name": _clean(payload.get("provider_name")),
+                "provider_type": _clean(payload.get("provider_type")),
                 "model": _clean(payload.get("model"), "gpt-image-2"),
                 "size": _clean(payload.get("size")),
+                "quality": _clean(payload.get("quality"), "auto"),
+                "stage": TASK_STAGE_QUEUED,
+                "attempt": 0,
+                "duration_ms": 0,
                 "progress": 0,
                 "progress_message": "排队中",
                 "created_at": now,
@@ -323,17 +464,22 @@ class ImageTaskService:
         model: str,
     ) -> None:
         started = time.time()
+        provider_id = _clean(payload.get("provider_id"))
+        identity["_provider_id"] = _clean(payload.get("provider_id"))
+        identity["_provider_name"] = _clean(payload.get("provider_name"))
+        identity["_provider_type"] = _clean(payload.get("provider_type"))
+        self._update_task(key, stage=TASK_STAGE_RUNNING)
         self._update_task(key, status=TASK_STATUS_RUNNING, error="", progress=15, progress_message="正在调用上游")
         try:
             if self._is_cancelled(key):
                 return
-            handler = self.edit_handler if mode in {"edit", "reverse_prompt"} else self.generation_handler
-            result = handler(payload)
+            result = self._call_task_provider(key, mode, payload)
             if self._is_cancelled(key):
                 return
             if not isinstance(result, dict):
                 raise RuntimeError("image task returned streaming result unexpectedly")
             self._update_task(key, progress=85, progress_message="正在整理结果")
+            self._update_task(key, stage=TASK_STAGE_ARCHIVING)
             data = result.get("data")
             message = _clean(result.get("message"))
             if mode == "reverse_prompt":
@@ -352,10 +498,13 @@ class ImageTaskService:
                 urls=[],
                 usage=result.get("usage"),
             )
+                self._update_task(key, stage=TASK_STAGE_SUCCESS, duration_ms=int((time.time() - started) * 1000), usage=result.get("usage") if isinstance(result.get("usage"), dict) else None)
+                self._record_provider_result(provider_id, ok=True, latency_ms=int((time.time() - started) * 1000))
                 return
             if not isinstance(data, list) or not data:
                 message = _clean(result.get("message")) or "image task returned no image data"
                 raise RuntimeError(message)
+            data = self.image_archiver(data, _clean(payload.get("base_url")), _clean(payload.get("owner_id")))
             self._update_task(key, status=TASK_STATUS_SUCCESS, data=data, error="", progress=100, progress_message="已完成")
             self._log_call(
                 identity,
@@ -367,6 +516,8 @@ class ImageTaskService:
                 urls=_collect_image_urls(data),
                 usage=result.get("usage"),
             )
+            self._update_task(key, stage=TASK_STAGE_SUCCESS, duration_ms=int((time.time() - started) * 1000), usage=result.get("usage") if isinstance(result.get("usage"), dict) else None)
+            self._record_provider_result(provider_id, ok=True, latency_ms=int((time.time() - started) * 1000))
         except Exception as exc:
             if self._is_cancelled(key):
                 return
@@ -382,6 +533,59 @@ class ImageTaskService:
                 status="failed",
                 error=error_message,
             )
+            self._update_task(key, stage=TASK_STAGE_ERROR, duration_ms=int((time.time() - started) * 1000))
+            self._record_provider_result(provider_id, ok=False, latency_ms=int((time.time() - started) * 1000), error=error_message)
+
+    def _call_task_provider(self, key: str, mode: str, payload: dict[str, Any]) -> dict[str, Any]:
+        provider_id = _clean(payload.get("provider_id"))
+        if not provider_id:
+            raise RuntimeError("No image provider selected.")
+        max_attempts = 2
+        last_error: Exception | None = None
+        for attempt in range(1, max_attempts + 1):
+            self._update_task(key, attempt=attempt, stage=TASK_STAGE_RUNNING)
+            try:
+                provider_request = ProviderRequest(
+                    provider_id=provider_id,
+                    prompt=_clean(payload.get("prompt")),
+                    model=_clean(payload.get("model")),
+                    size=_clean(payload.get("size")),
+                    quality=_clean(payload.get("quality"), "auto"),
+                    n=1,
+                    response_format=_clean(payload.get("response_format"), "url"),
+                    images=payload.get("images") if isinstance(payload.get("images"), list) else None,
+                    message_as_error=bool(payload.get("message_as_error", True)),
+                    owner_id=_clean(payload.get("owner_id")),
+                )
+                with self._provider_lock(provider_id):
+                    if mode == "reverse_prompt":
+                        return self.provider_service.reverse_prompt(provider_request)
+                    if mode == "edit":
+                        return self.provider_service.edit(provider_request)
+                    return self.provider_service.generate(provider_request)
+            except Exception as exc:
+                last_error = exc
+                if attempt >= max_attempts or not _is_retryable_error(exc) or self._is_cancelled(key):
+                    raise
+                self._update_task(key, progress=24, progress_message="上游暂时失败，正在重试")
+                time.sleep(min(2.0, 0.4 * attempt))
+        raise last_error or RuntimeError("image task failed")
+
+    def _provider_lock(self, provider_id: str) -> threading.Semaphore:
+        with self._lock:
+            lock = self._provider_locks.get(provider_id)
+            if lock is None:
+                lock = threading.Semaphore(2)
+                self._provider_locks[provider_id] = lock
+            return lock
+
+    def _record_provider_result(self, provider_id: str, *, ok: bool, latency_ms: int = 0, error: str = "") -> None:
+        if not provider_id or not hasattr(self.provider_service, "record_provider_result"):
+            return
+        try:
+            self.provider_service.record_provider_result(provider_id, ok=ok, latency_ms=latency_ms, error=error)
+        except Exception:
+            pass
 
     def _log_call(
         self,
@@ -397,7 +601,7 @@ class ImageTaskService:
         urls: list[str] | None = None,
         usage: object = None,
     ) -> None:
-        endpoint = "/api/image-tasks/reverse-prompts" if mode == "reverse_prompt" else "/v1/images/edits" if mode == "edit" else "/v1/images/generations"
+        endpoint = "/api/image-tasks/reverse-prompts" if mode == "reverse_prompt" else "/api/image-tasks/edits" if mode == "edit" else "/api/image-tasks/generations"
         summary_prefix = "反推提示词" if mode == "reverse_prompt" else "图生图" if mode == "edit" else "文生图"
         detail = {
             "key_id": identity.get("id"),
@@ -405,6 +609,9 @@ class ImageTaskService:
             "role": identity.get("role"),
             "endpoint": endpoint,
             "model": model,
+            "provider_id": identity.get("_provider_id"),
+            "provider_name": identity.get("_provider_name"),
+            "provider_type": identity.get("_provider_type"),
             "started_at": datetime.fromtimestamp(started).strftime("%Y-%m-%d %H:%M:%S"),
             "ended_at": _now_iso(),
             "duration_ms": int((time.time() - started) * 1000),
@@ -481,8 +688,12 @@ class ImageTaskService:
                 "owner_id": owner,
                 "status": status,
                 "mode": mode,
+                "provider_id": _clean(item.get("provider_id")),
+                "provider_name": _clean(item.get("provider_name")),
+                "provider_type": _clean(item.get("provider_type")),
                 "model": _clean(item.get("model"), "gpt-image-2"),
                 "size": _clean(item.get("size")),
+                "quality": _clean(item.get("quality"), "auto"),
                 "progress": _progress(item.get("progress"), 100 if status in TERMINAL_STATUSES else 0),
                 "progress_message": _clean(item.get("progress_message")),
                 "created_at": _clean(item.get("created_at"), _now_iso()),

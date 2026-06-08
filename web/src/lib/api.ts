@@ -1,76 +1,13 @@
 import { httpRequest, request } from "@/lib/request";
 
-export type AccountType = string;
-export type AccountStatus = "正常" | "限流" | "异常" | "禁用";
 export type ImageModel =
   | "gpt-image-2"
   | "codex-gpt-image-2"
   | "plus-codex-gpt-image-2"
   | "team-codex-gpt-image-2"
-  | "pro-codex-gpt-image-2";
+  | "pro-codex-gpt-image-2"
+  | string;
 export type AuthRole = "admin" | "user";
-
-export type Account = {
-  access_token: string;
-  type: AccountType;
-  status: AccountStatus;
-  quota: number;
-  image_quota_unknown?: boolean;
-  source_type?: string | null;
-  export_type?: string | null;
-  email?: string | null;
-  user_id?: string | null;
-  limits_progress?: Array<{
-    feature_name?: string;
-    remaining?: number;
-    reset_after?: string;
-  }>;
-  default_model_slug?: string | null;
-  restore_at?: string | null;
-  success: number;
-  fail: number;
-  last_used_at?: string | null;
-};
-
-type AccountListResponse = {
-  items: Account[];
-};
-
-type AccountMutationResponse = {
-  items: Account[];
-  added?: number;
-  skipped?: number;
-  removed?: number;
-  refreshed?: number;
-  errors?: Array<{ access_token: string; error: string }>;
-  refresh_job?: AccountRefreshJob;
-};
-
-type AccountRefreshResponse = {
-  items: Account[];
-  refreshed: number;
-  errors: Array<{ access_token: string; error: string }>;
-};
-
-export type AccountRefreshJob = {
-  id: string;
-  status: "running" | "finished" | "error";
-  total: number;
-  done: number;
-  refreshed: number;
-  failed: number;
-  errors: Array<{ token?: string; access_token?: string; error: string }>;
-  items: Account[];
-  started_at?: string | null;
-  updated_at?: string | null;
-  finished_at?: string | null;
-  error?: string;
-};
-
-type AccountUpdateResponse = {
-  item: Account;
-  items: Account[];
-};
 
 export type SettingsConfig = {
   proxy: string;
@@ -114,6 +51,7 @@ export type BackupInclude = {
   sub2api: boolean;
   logs: boolean;
   image_tasks: boolean;
+  image_providers: boolean;
   image_conversations: boolean;
   image_canvas: boolean;
   accounts_snapshot: boolean;
@@ -188,6 +126,10 @@ export type ManagedImage = {
   width?: number;
   height?: number;
   tags?: string[];
+  canvas_project_id?: string;
+  canvas_project_title?: string;
+  canvas_node_id?: string;
+  canvas_node_title?: string;
 };
 
 export type SystemLog = {
@@ -199,18 +141,22 @@ export type SystemLog = {
   [key: string]: unknown;
 };
 
-export type ImageResponse = {
-  created: number;
-  data: Array<{ b64_json?: string; url?: string; revised_prompt?: string }>;
-  message?: string;
-};
-
 export type ImageTask = {
   id: string;
   status: "queued" | "running" | "success" | "error" | "cancelled";
+  stage?: "queued" | "running" | "archiving" | "success" | "error" | "cancelled" | string;
   mode: "generate" | "edit" | "reverse_prompt";
+  provider_id?: string;
+  provider_name?: string;
+  provider_type?: string;
   model?: ImageModel;
   size?: string;
+  quality?: string;
+  attempt?: number;
+  duration_ms?: number;
+  usage?: Record<string, unknown>;
+  image_width?: number;
+  image_height?: number;
   progress?: number;
   progress_message?: string;
   created_at: string;
@@ -218,6 +164,49 @@ export type ImageTask = {
   data?: Array<{ b64_json?: string; url?: string; revised_prompt?: string }>;
   error?: string;
   message?: string;
+};
+
+export type ImageProviderCapabilities = {
+  generate: boolean;
+  edit: boolean;
+  reverse_prompt: boolean;
+};
+
+export type ImageProvider = {
+  id: string;
+  name: string;
+  type: "openai_compatible" | string;
+  enabled: boolean;
+  base_url: string;
+  has_api_key: boolean;
+  default_model: string;
+  default_reverse_prompt_model?: string;
+  default_size: string;
+  default_quality: string;
+  timeout_secs: number;
+  capabilities: ImageProviderCapabilities;
+  warnings?: string[];
+  last_success_at?: string | null;
+  last_error_at?: string | null;
+  last_error?: string;
+  latency_ms?: number;
+  success_count?: number;
+  error_count?: number;
+  model_cache?: string[];
+  model_cache_updated_at?: string | null;
+};
+
+export type ImageProviderListResponse = {
+  items: ImageProvider[];
+  default_provider_id: string;
+  default_reverse_provider_id?: string;
+};
+
+export type ImageProviderInput = Partial<ImageProvider> & {
+  api_key?: string;
+  keep_api_key?: boolean;
+  make_default?: boolean;
+  make_reverse_default?: boolean;
 };
 
 export type ImagePromptSource = string | { url?: string; data?: string; base64?: string; mime?: string; filename?: string };
@@ -308,110 +297,13 @@ export async function updateAdminPassword(currentKey: string, newKey: string) {
   });
 }
 
-export async function fetchAccounts() {
-  return httpRequest<AccountListResponse>("/api/accounts");
-}
-
-export async function createAccounts(tokens: string[], options: { backgroundRefresh?: boolean } = {}) {
-  return httpRequest<AccountMutationResponse>("/api/accounts", {
-    method: "POST",
-    body: { tokens, background_refresh: Boolean(options.backgroundRefresh) },
-  });
-}
-
-export async function deleteAccounts(tokens: string[]) {
-  return httpRequest<AccountMutationResponse>("/api/accounts", {
-    method: "DELETE",
-    body: { tokens },
-  });
-}
-
-export async function refreshAccounts(accessTokens: string[]) {
-  return httpRequest<AccountRefreshResponse>("/api/accounts/refresh", {
-    method: "POST",
-    body: { access_tokens: accessTokens },
-  });
-}
-
-export async function startAccountRefreshJob(accessTokens: string[]) {
-  return httpRequest<AccountRefreshJob>("/api/accounts/refresh-jobs", {
-    method: "POST",
-    body: { access_tokens: accessTokens },
-  });
-}
-
-export async function fetchAccountRefreshJob(jobId: string) {
-  return httpRequest<AccountRefreshJob>(`/api/accounts/refresh-jobs/${jobId}`);
-}
-
-export async function updateAccount(
-  accessToken: string,
-  updates: {
-    type?: AccountType;
-    status?: AccountStatus;
-    quota?: number;
-  },
-) {
-  return httpRequest<AccountUpdateResponse>("/api/accounts/update", {
-    method: "POST",
-    body: {
-      access_token: accessToken,
-      ...updates,
-    },
-  });
-}
-
-export async function generateImage(prompt: string, model?: ImageModel, size?: string, quality?: string) {
-  return httpRequest<ImageResponse>(
-    "/v1/images/generations",
-    {
-      method: "POST",
-      body: {
-        prompt,
-        ...(model ? { model } : {}),
-        ...(size ? { size } : {}),
-        ...(quality ? { quality } : {}),
-        n: 1,
-        response_format: "b64_json",
-      },
-    },
-  );
-}
-
-export async function editImage(files: File | File[], prompt: string, model?: ImageModel, size?: string, quality?: string) {
-  const formData = new FormData();
-  const uploadFiles = Array.isArray(files) ? files : [files];
-
-  uploadFiles.forEach((file) => {
-    formData.append("image", file);
-  });
-  formData.append("prompt", prompt);
-  if (model) {
-    formData.append("model", model);
-  }
-  if (size) {
-    formData.append("size", size);
-  }
-  if (quality) {
-    formData.append("quality", quality);
-  }
-  formData.append("n", "1");
-
-  return httpRequest<ImageResponse>(
-    "/v1/images/edits",
-    {
-      method: "POST",
-      body: formData,
-    },
-  );
-}
-
-export async function createImageGenerationTask(clientTaskId: string, prompt: string, model?: ImageModel, size?: string, quality?: string) {
+export async function createImageGenerationTask(clientTaskId: string, prompt: string, model?: ImageModel, size?: string, quality?: string, providerId?: string) {
   return httpRequest<ImageTask>("/api/image-tasks/generations", {
     method: "POST",
     body: {
       client_task_id: clientTaskId,
       prompt,
+      ...(providerId ? { provider_id: providerId } : {}),
       ...(model ? { model } : {}),
       ...(size ? { size } : {}),
       ...(quality ? { quality } : {}),
@@ -426,6 +318,7 @@ export async function createImageEditTask(
   model?: ImageModel,
   size?: string,
   quality?: string,
+  providerId?: string,
 ) {
   const formData = new FormData();
   const uploadFiles = Array.isArray(files) ? files : [files];
@@ -435,6 +328,9 @@ export async function createImageEditTask(
   });
   formData.append("client_task_id", clientTaskId);
   formData.append("prompt", prompt);
+  if (providerId) {
+    formData.append("provider_id", providerId);
+  }
   if (model) {
     formData.append("model", model);
   }
@@ -458,6 +354,7 @@ export async function createImageEditTaskFromSource(
   model?: ImageModel,
   size?: string,
   quality?: string,
+  providerId?: string,
 ) {
   return httpRequest<ImageTask>("/api/image-tasks/edits", {
     method: "POST",
@@ -465,6 +362,7 @@ export async function createImageEditTaskFromSource(
       client_task_id: clientTaskId,
       image,
       prompt,
+      ...(providerId ? { provider_id: providerId } : {}),
       ...(model ? { model } : {}),
       ...(size ? { size } : {}),
       ...(quality ? { quality } : {}),
@@ -479,6 +377,7 @@ export async function createImageEditTaskFromSources(
   model?: ImageModel,
   size?: string,
   quality?: string,
+  providerId?: string,
 ) {
   return httpRequest<ImageTask>("/api/image-tasks/edits", {
     method: "POST",
@@ -486,6 +385,7 @@ export async function createImageEditTaskFromSources(
       client_task_id: clientTaskId,
       images,
       prompt,
+      ...(providerId ? { provider_id: providerId } : {}),
       ...(model ? { model } : {}),
       ...(size ? { size } : {}),
       ...(quality ? { quality } : {}),
@@ -498,6 +398,7 @@ export async function createReversePromptTask(
   image: ImagePromptSource,
   instruction?: string,
   model?: ImageModel,
+  providerId?: string,
 ) {
   return httpRequest<ImageTask>("/api/image-tasks/reverse-prompts", {
     method: "POST",
@@ -505,30 +406,10 @@ export async function createReversePromptTask(
       client_task_id: clientTaskId,
       image,
       prompt: instruction?.trim() || DEFAULT_REVERSE_PROMPT_INSTRUCTION,
-      model: model || "gpt-image-2",
+      ...(model ? { model } : {}),
+      ...(providerId ? { provider_id: providerId } : {}),
     },
   });
-}
-
-export async function reverseImagePrompt(image: ImagePromptSource, instruction?: string, model?: string, signal?: AbortSignal) {
-  const prompt = instruction?.trim() || DEFAULT_REVERSE_PROMPT_INSTRUCTION;
-  const result = await httpRequest<ImageResponse>("/v1/images/edits", {
-    method: "POST",
-    signal,
-    body: {
-      image,
-      prompt,
-      model: model || "gpt-image-2",
-      n: 1,
-      response_format: "url",
-      message_as_error: false,
-    },
-  });
-  const reversedPrompt = result.message?.trim() || result.data[0]?.revised_prompt?.trim() || "";
-  if (!reversedPrompt) {
-    throw new Error("未能从图片反推出提示词");
-  }
-  return { prompt: reversedPrompt, model: model || "gpt-image-2" };
 }
 
 export async function fetchReversePromptInstruction() {
@@ -550,11 +431,64 @@ export async function fetchImageTasks(ids: string[]) {
   return httpRequest<ImageTaskListResponse>(`/api/image-tasks${params.toString() ? `?${params.toString()}` : ""}`);
 }
 
+export async function createImageTaskEventSource(ids: string[]) {
+  if (typeof window === "undefined" || typeof EventSource === "undefined" || ids.length === 0) {
+    return null;
+  }
+  const { getStoredAuthSession } = await import("@/store/auth");
+  const session = await getStoredAuthSession();
+  const token = session?.key || "";
+  if (!token) return null;
+  const params = new URLSearchParams();
+  params.set("ids", ids.join(","));
+  params.set("token", token);
+  return new EventSource(`/api/image-tasks/events?${params.toString()}`);
+}
+
 export async function cancelImageTasks(ids: string[]) {
   return httpRequest<ImageTaskCancelResponse>("/api/image-tasks/cancel", {
     method: "POST",
     body: { ids },
   });
+}
+
+export async function fetchImageProviders() {
+  return httpRequest<ImageProviderListResponse>("/api/image-providers");
+}
+
+export async function saveImageProvider(provider: ImageProviderInput) {
+  return httpRequest<ImageProviderListResponse & { item: ImageProvider }>("/api/image-providers", {
+    method: "POST",
+    body: provider,
+  });
+}
+
+export async function deleteImageProvider(providerId: string) {
+  return httpRequest<ImageProviderListResponse>(`/api/image-providers/${encodeURIComponent(providerId)}`, {
+    method: "DELETE",
+  });
+}
+
+export async function setDefaultImageProvider(providerId: string, purpose: "generate" | "reverse_prompt" = "generate") {
+  return httpRequest<ImageProviderListResponse>("/api/image-providers/default", {
+    method: "POST",
+    body: { provider_id: providerId, purpose },
+  });
+}
+
+export async function testImageProvider(providerId: string, model = "") {
+  return httpRequest<{ result: ProxyTestResult }>(`/api/image-providers/${encodeURIComponent(providerId)}/test`, {
+    method: "POST",
+    body: { model },
+  });
+}
+
+export async function revealImageProviderApiKey(providerId: string) {
+  return httpRequest<{ api_key: string }>(`/api/image-providers/${encodeURIComponent(providerId)}/api-key`);
+}
+
+export async function fetchImageProviderModels(providerId: string) {
+  return httpRequest<{ items: string[] }>(`/api/image-providers/${encodeURIComponent(providerId)}/models`);
 }
 
 export async function fetchSettingsConfig() {
@@ -713,169 +647,7 @@ export async function deleteUserKey(keyId: string) {
 
 // ── CPA (CLIProxyAPI) ──────────────────────────────────────────────
 
-export type CPAPool = {
-  id: string;
-  name: string;
-  base_url: string;
-  import_job?: CPAImportJob | null;
-};
-
-export type CPARemoteFile = {
-  name: string;
-  email: string;
-};
-
-export type CPAImportJob = {
-  job_id: string;
-  status: "pending" | "running" | "completed" | "failed";
-  created_at: string;
-  updated_at: string;
-  total: number;
-  completed: number;
-  added: number;
-  skipped: number;
-  refreshed: number;
-  failed: number;
-  errors: Array<{ name: string; error: string }>;
-};
-
-export async function fetchCPAPools() {
-  return httpRequest<{ pools: CPAPool[] }>("/api/cpa/pools");
-}
-
-export async function createCPAPool(pool: { name: string; base_url: string; secret_key: string }) {
-  return httpRequest<{ pool: CPAPool; pools: CPAPool[] }>("/api/cpa/pools", {
-    method: "POST",
-    body: pool,
-  });
-}
-
-export async function updateCPAPool(
-  poolId: string,
-  updates: { name?: string; base_url?: string; secret_key?: string },
-) {
-  return httpRequest<{ pool: CPAPool; pools: CPAPool[] }>(`/api/cpa/pools/${poolId}`, {
-    method: "POST",
-    body: updates,
-  });
-}
-
-export async function deleteCPAPool(poolId: string) {
-  return httpRequest<{ pools: CPAPool[] }>(`/api/cpa/pools/${poolId}`, {
-    method: "DELETE",
-  });
-}
-
-export async function fetchCPAPoolFiles(poolId: string) {
-  return httpRequest<{ pool_id: string; files: CPARemoteFile[] }>(`/api/cpa/pools/${poolId}/files`);
-}
-
-export async function startCPAImport(poolId: string, names: string[]) {
-  return httpRequest<{ import_job: CPAImportJob | null }>(`/api/cpa/pools/${poolId}/import`, {
-    method: "POST",
-    body: { names },
-  });
-}
-
-export async function fetchCPAPoolImportJob(poolId: string) {
-  return httpRequest<{ import_job: CPAImportJob | null }>(`/api/cpa/pools/${poolId}/import`);
-}
-
 // ── Sub2API ────────────────────────────────────────────────────────
-
-export type Sub2APIServer = {
-  id: string;
-  name: string;
-  base_url: string;
-  email: string;
-  has_api_key: boolean;
-  group_id: string;
-  import_job?: CPAImportJob | null;
-};
-
-export type Sub2APIRemoteAccount = {
-  id: string;
-  name: string;
-  email: string;
-  plan_type: string;
-  status: string;
-  expires_at: string;
-  has_refresh_token: boolean;
-};
-
-export type Sub2APIRemoteGroup = {
-  id: string;
-  name: string;
-  description: string;
-  platform: string;
-  status: string;
-  account_count: number;
-  active_account_count: number;
-};
-
-export async function fetchSub2APIServers() {
-  return httpRequest<{ servers: Sub2APIServer[] }>("/api/sub2api/servers");
-}
-
-export async function createSub2APIServer(server: {
-  name: string;
-  base_url: string;
-  email: string;
-  password: string;
-  api_key: string;
-  group_id: string;
-}) {
-  return httpRequest<{ server: Sub2APIServer; servers: Sub2APIServer[] }>("/api/sub2api/servers", {
-    method: "POST",
-    body: server,
-  });
-}
-
-export async function updateSub2APIServer(
-  serverId: string,
-  updates: {
-    name?: string;
-    base_url?: string;
-    email?: string;
-    password?: string;
-    api_key?: string;
-    group_id?: string;
-  },
-) {
-  return httpRequest<{ server: Sub2APIServer; servers: Sub2APIServer[] }>(`/api/sub2api/servers/${serverId}`, {
-    method: "POST",
-    body: updates,
-  });
-}
-
-export async function fetchSub2APIServerGroups(serverId: string) {
-  return httpRequest<{ server_id: string; groups: Sub2APIRemoteGroup[] }>(
-    `/api/sub2api/servers/${serverId}/groups`,
-  );
-}
-
-export async function deleteSub2APIServer(serverId: string) {
-  return httpRequest<{ servers: Sub2APIServer[] }>(`/api/sub2api/servers/${serverId}`, {
-    method: "DELETE",
-  });
-}
-
-export async function fetchSub2APIServerAccounts(serverId: string) {
-  return httpRequest<{ server_id: string; accounts: Sub2APIRemoteAccount[] }>(
-    `/api/sub2api/servers/${serverId}/accounts`,
-  );
-}
-
-export async function startSub2APIImport(serverId: string, accountIds: string[]) {
-  return httpRequest<{ import_job: CPAImportJob | null }>(`/api/sub2api/servers/${serverId}/import`, {
-    method: "POST",
-    body: { account_ids: accountIds },
-  });
-}
-
-export async function fetchSub2APIImportJob(serverId: string) {
-  return httpRequest<{ import_job: CPAImportJob | null }>(`/api/sub2api/servers/${serverId}/import`);
-}
 
 // ── Upstream proxy ────────────────────────────────────────────────
 
@@ -889,6 +661,7 @@ export type ProxyTestResult = {
   status: number;
   latency_ms: number;
   error: string | null;
+  warnings?: string[];
 };
 
 export async function fetchProxy() {

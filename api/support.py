@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
-from threading import Event, Thread
 
 from fastapi import HTTPException, Request
 
-from services.account_service import account_service
 from services.auth_service import auth_service
 from services.config import config
 
@@ -82,25 +80,6 @@ def sanitize_sub2api_server(server: dict | None) -> dict | None:
 
 def sanitize_sub2api_servers(servers: list[dict]) -> list[dict]:
     return [sanitized for server in servers if (sanitized := sanitize_sub2api_server(server)) is not None]
-
-
-def start_limited_account_watcher(stop_event: Event) -> Thread:
-    interval_seconds = config.refresh_account_interval_minute * 60
-
-    def worker() -> None:
-        while not stop_event.is_set():
-            try:
-                limited_tokens = account_service.list_limited_tokens()
-                if limited_tokens:
-                    print(f"[account-limited-watcher] checking {len(limited_tokens)} limited accounts")
-                    account_service.refresh_accounts(limited_tokens)
-            except Exception as exc:
-                print(f"[account-limited-watcher] fail {exc}")
-            stop_event.wait(interval_seconds)
-
-    thread = Thread(target=worker, name="limited-account-watcher", daemon=True)
-    thread.start()
-    return thread
 
 
 def resolve_web_asset(requested_path: str, *, prefer_rsc: bool = False) -> Path | None:

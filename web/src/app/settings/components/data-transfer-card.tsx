@@ -15,26 +15,25 @@ import { getStoredAuthKey } from "@/store/auth";
 const transferItems: Array<{ key: keyof BackupInclude; label: string; note: string }> = [
   { key: "image_conversations", label: "Image conversations", note: "Image page conversation history" },
   { key: "config", label: "系统配置", note: "基础设置、管理员密码等" },
-  { key: "accounts_snapshot", label: "账号池", note: "所有账号与额度状态" },
   { key: "auth_keys_snapshot", label: "用户密钥", note: "普通用户访问密钥" },
   { key: "image_tasks", label: "图片任务", note: "画图任务记录" },
+  { key: "image_providers", label: "模型服务", note: "画布可调用的图片 Provider" },
   { key: "image_canvas", label: "画布项目", note: "画布节点与连接关系" },
   { key: "images", label: "生成图片", note: "本地生成图片与标签" },
-  { key: "logs", label: "运行日志", note: "调用日志与账号事件" },
-  { key: "cpa", label: "CPA 配置", note: "CPA 连接配置" },
-  { key: "sub2api", label: "Sub2API 配置", note: "Sub2API 连接配置" },
+  { key: "logs", label: "运行日志", note: "调用日志与系统事件" },
 ];
 
 const defaultInclude: BackupInclude = {
   config: true,
   register: false,
-  cpa: true,
-  sub2api: true,
+  cpa: false,
+  sub2api: false,
   logs: true,
   image_tasks: true,
+  image_providers: true,
   image_conversations: true,
   image_canvas: true,
-  accounts_snapshot: true,
+  accounts_snapshot: false,
   auth_keys_snapshot: true,
   images: false,
 };
@@ -300,7 +299,7 @@ export function DataTransferCard() {
             <span>
               <span className="block font-medium">包含敏感数据，生成完整迁移包</span>
               <span className="mt-1 block text-xs leading-5 text-amber-800">
-                默认导出会脱敏账号 Token、用户密钥哈希、管理员密码哈希、R2 密钥等内容。只有换服务器或完整恢复时才建议开启。
+                默认导出会脱敏 Provider API Key、用户密钥哈希、管理员密码哈希、R2 密钥等内容。只有换服务器或完整恢复时才建议开启。
               </span>
             </span>
           </label>

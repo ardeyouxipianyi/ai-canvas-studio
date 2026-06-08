@@ -133,7 +133,7 @@ if (-not $SkipPackage) {
         Write-Host "  Downloading runtimes..."
         Invoke-LoggedCommand { & powershell -ExecutionPolicy Bypass -File scripts\windows\download-runtimes.ps1 -RuntimeDir $RuntimeDir } "Runtime download failed."
     }
-    $distName = "chatgpt2api-windows-portable-$tag"
+    $distName = "ai-canvas-studio-windows-portable-$tag"
     $distDir = "dist\$distName"
     Invoke-LoggedCommand { & powershell -ExecutionPolicy Bypass -File scripts\windows\package-portable.ps1 -OutputDir $distDir -RuntimeDir $RuntimeDir -SkipWebBuild } "Packaging failed."
 
@@ -201,7 +201,7 @@ if (-not $password) {
         Authorization = "Bearer $password"
         Accept = 'application/vnd.github+json'
         'X-GitHub-Api-Version' = '2022-11-28'
-        'User-Agent' = 'chatgpt2api-release'
+        'User-Agent' = 'ai-canvas-studio-release'
     }
     $releaseBody = "Release $tag"
     if ($sha256) { $releaseBody += "`n`nWindows portable SHA256: ``$sha256``" }
@@ -240,6 +240,6 @@ Write-Host ""
 Write-Host "========================================" -ForegroundColor Green
 Write-Host "  Done! $tag" -ForegroundColor Green
 Write-Host "========================================" -ForegroundColor Green
-Write-Host "  https://github.com/ardeyouxipianyi/chatgpt2api/releases/tag/$tag"
+Write-Host "  https://github.com/ardeyouxipianyi/ai-canvas-studio/releases/tag/$tag"
 if ($sha256) { Write-Host "  SHA256: $sha256" }
 Write-Host ""

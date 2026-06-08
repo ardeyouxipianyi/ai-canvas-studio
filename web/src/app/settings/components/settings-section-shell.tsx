@@ -1,10 +1,10 @@
 "use client";
 
-import { ArrowLeft, Database, FileText, ImageIcon, Settings } from "lucide-react";
+import { ArrowLeft, FileText, ImageIcon, Settings } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
-export type SettingsSectionId = "base" | "accounts" | "images" | "logs";
+export type SettingsSectionId = "base" | "images" | "logs";
 
 export const settingsSections: Array<{
   id: SettingsSectionId;
@@ -13,7 +13,6 @@ export const settingsSections: Array<{
   icon: typeof Settings;
 }> = [
   { id: "base", label: "基础设置", description: "系统参数、备份、用户", icon: Settings },
-  { id: "accounts", label: "号池管理", description: "账号、额度、刷新", icon: Database },
   { id: "images", label: "图片管理", description: "生成图片与标签", icon: ImageIcon },
   { id: "logs", label: "日志管理", description: "调用日志与错误", icon: FileText },
 ];

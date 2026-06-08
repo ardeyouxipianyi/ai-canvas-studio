@@ -66,12 +66,10 @@ function getFilenameFromContentDisposition(value: string | null) {
 const includeLabels: Array<{ key: keyof BackupInclude; label: string }> = [
   { key: "image_conversations", label: "Image conversations" },
   { key: "config", label: "系统配置" },
-  { key: "cpa", label: "CPA 配置" },
-  { key: "sub2api", label: "Sub2API 配置" },
   { key: "logs", label: "调度与调用日志" },
   { key: "image_tasks", label: "图片任务记录" },
+  { key: "image_providers", label: "模型服务" },
   { key: "image_canvas", label: "画布项目" },
-  { key: "accounts_snapshot", label: "账号快照" },
   { key: "auth_keys_snapshot", label: "用户密钥快照" },
   { key: "images", label: "图片文件目录" },
 ];
@@ -194,7 +192,7 @@ export function BackupSettingsCard() {
             </div>
           </div>
 
-          <div className="rounded-xl border border-stone-200 bg-stone-50 px-4 py-3 text-sm leading-6 text-stone-600">账号与用户密钥会从当前存储后端导出逻辑快照，不依赖底层是 `json`、`sqlite`、`postgres` 还是 `git`。图片目录默认不备份，避免备份体积过大。</div>
+          <div className="rounded-xl border border-stone-200 bg-stone-50 px-4 py-3 text-sm leading-6 text-stone-600">Provider、用户密钥、画布项目和任务记录会从当前存储后端导出逻辑快照，不依赖底层是 `json`、`sqlite`、`postgres` 还是 `git`。图片目录默认不备份，避免备份体积过大。</div>
 
           {backupEnabled ? (
             <>

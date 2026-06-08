@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import asyncio
+import json
 from typing import Any
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request
 from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from api.support import require_identity, resolve_image_base_url
@@ -19,6 +22,7 @@ class ImageGenerationTaskRequest(BaseModel):
     model: str = "gpt-image-2"
     size: str | None = None
     quality: str = "auto"
+    provider_id: str = ""
 
 
 class ReversePromptTaskRequest(BaseModel):
@@ -26,7 +30,8 @@ class ReversePromptTaskRequest(BaseModel):
     prompt: str = Field(..., min_length=1)
     image: object | None = None
     images: list[object] | None = None
-    model: str = "gpt-image-2"
+    model: str = ""
+    provider_id: str = ""
 
 
 class ImageTaskCancelRequest(BaseModel):
@@ -87,6 +92,7 @@ async def _parse_edit_task_request(request: Request) -> tuple[dict[str, str | No
             "model": str(form.get("model") or "gpt-image-2"),
             "size": str(form.get("size") or "") or None,
             "quality": str(form.get("quality") or "auto"),
+            "provider_id": str(form.get("provider_id") or form.get("providerId") or ""),
         }
         images: list[tuple[bytes, str, str]] = []
         for key in ("image", "image[]", "images", "images[]", "image_url", "image_url[]"):
@@ -115,6 +121,7 @@ async def _parse_edit_task_request(request: Request) -> tuple[dict[str, str | No
         "model": str(body.get("model") or "gpt-image-2"),
         "size": str(body.get("size") or "") or None,
         "quality": str(body.get("quality") or "auto"),
+        "provider_id": str(body.get("provider_id") or body.get("providerId") or ""),
     }
     return payload, _images_from_json_body(body)
 
@@ -129,6 +136,44 @@ async def filter_or_log(call: LoggedCall, text: str) -> None:
 
 def create_router() -> APIRouter:
     router = APIRouter()
+
+    @router.get("/api/image-tasks/events")
+    async def stream_image_task_events(
+        request: Request,
+        ids: str = Query(default=""),
+        token: str = Query(default=""),
+        authorization: str | None = Header(default=None),
+    ):
+        identity = require_identity(authorization or (f"Bearer {token}" if token else None))
+        task_ids = _parse_task_ids(ids)
+        if not task_ids:
+            raise HTTPException(status_code=400, detail={"error": "ids is required"})
+
+        async def event_stream():
+            previous = ""
+            idle_ticks = 0
+            while True:
+                if await request.is_disconnected():
+                    break
+                data = await run_in_threadpool(image_task_service.list_tasks, identity, task_ids)
+                payload = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+                if payload != previous:
+                    previous = payload
+                    idle_ticks = 0
+                    yield f"event: tasks\ndata: {payload}\n\n"
+                else:
+                    idle_ticks += 1
+                    if idle_ticks % 10 == 0:
+                        yield ": keepalive\n\n"
+                items = data.get("items") if isinstance(data, dict) else []
+                missing_ids = data.get("missing_ids") if isinstance(data, dict) else []
+                finished = len(missing_ids or []) + sum(1 for item in items if isinstance(item, dict) and item.get("status") in {"success", "error", "cancelled"})
+                if finished >= len(task_ids):
+                    yield f"event: done\ndata: {payload}\n\n"
+                    break
+                await asyncio.sleep(1)
+
+        return StreamingResponse(event_stream(), media_type="text/event-stream")
 
     @router.get("/api/image-tasks")
     async def list_image_tasks(
@@ -163,6 +208,7 @@ def create_router() -> APIRouter:
                 model=body.model,
                 size=body.size,
                 quality=body.quality,
+                provider_id=body.provider_id,
                 base_url=resolve_image_base_url(request),
             )
         except ValueError as exc:
@@ -180,6 +226,7 @@ def create_router() -> APIRouter:
         model = str(payload.get("model") or "gpt-image-2")
         size = payload.get("size")
         quality = str(payload.get("quality") or "auto")
+        provider_id = str(payload.get("provider_id") or "")
         if not client_task_id:
             raise HTTPException(status_code=400, detail={"error": "client_task_id is required"})
         if not prompt.strip():
@@ -196,6 +243,7 @@ def create_router() -> APIRouter:
                 model=model,
                 size=size,
                 quality=quality,
+                provider_id=provider_id,
                 base_url=resolve_image_base_url(request),
                 images=images,
             )
@@ -210,7 +258,7 @@ def create_router() -> APIRouter:
     ):
         identity = require_identity(authorization)
         prompt = str(body.prompt or "")
-        model = str(body.model or "gpt-image-2")
+        model = str(body.model or "")
         await filter_or_log(LoggedCall(identity, "/api/image-tasks/reverse-prompts", model, "反推提示词任务", request_text=prompt), prompt)
         images = _images_from_reverse_prompt_body(body)
         if not images:
@@ -225,6 +273,7 @@ def create_router() -> APIRouter:
                 client_task_id=body.client_task_id,
                 prompt=prompt,
                 model=model,
+                provider_id=body.provider_id,
                 base_url=resolve_image_base_url(request),
                 images=images,
             )

@@ -142,12 +142,12 @@ class BackupServiceSensitiveExportTests(unittest.TestCase):
             "very-secret-token",
         ):
             self.assertNotIn(secret, raw_archive_text)
+        self.assertNotIn("data/cpa_config.json", members)
+        self.assertNotIn("snapshots/accounts.json", members)
 
         config = decode_json(members, "config.json")
         self.assertEqual(config["auth-key-hash"], REDACTED_VALUE)
         self.assertEqual(config["ai_review"]["api_key"], REDACTED_VALUE)
-        accounts = decode_json(members, "snapshots/accounts.json")
-        self.assertEqual(accounts[0]["access_token"], REDACTED_VALUE)
         auth_keys = decode_json(members, "snapshots/auth_keys.json")
         self.assertEqual(auth_keys[0]["key_hash"], REDACTED_VALUE)
 
@@ -170,8 +170,10 @@ class BackupServiceSensitiveExportTests(unittest.TestCase):
 
         raw_archive_text = b"\n".join(members.values()).decode("utf-8")
         self.assertIn("admin-hash-secret", raw_archive_text)
-        self.assertIn("account-secret-token", raw_archive_text)
         self.assertIn("user-key-hash-secret", raw_archive_text)
+        self.assertNotIn("account-secret-token", raw_archive_text)
+        self.assertNotIn("data/cpa_config.json", members)
+        self.assertNotIn("snapshots/accounts.json", members)
 
 
 if __name__ == "__main__":

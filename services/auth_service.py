@@ -292,7 +292,7 @@ class AuthService:
         key_id = self._clean(identity.get("id"))
         if not key_id or key_id == "admin":
             return
-        is_image_call = endpoint.startswith("/v1/images/") or endpoint.startswith("/api/image-tasks/")
+        is_image_call = endpoint.startswith("/api/image-tasks/")
         succeeded = status == "success"
         now = _now_iso()
         with self._lock:

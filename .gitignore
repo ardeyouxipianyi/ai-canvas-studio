@@ -13,6 +13,9 @@ runtime/
 data
 config.json
 edit
+dev-server.log
+backend-server.log
+backend-server.err.log
 
 docker-compose-local.yml
 

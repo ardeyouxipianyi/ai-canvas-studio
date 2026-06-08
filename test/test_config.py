@@ -65,7 +65,7 @@ class ConfigLoadingTests(unittest.TestCase):
             package_config = base_dir / "config.json"
             runtime_config = data_dir / "config.json"
             package_config.write_text(
-                json.dumps({"auth-key": "chatgpt2api", "refresh_account_interval_minute": 11}),
+                json.dumps({"auth-key": "ai-canvas-studio", "refresh_account_interval_minute": 11}),
                 encoding="utf-8",
             )
 

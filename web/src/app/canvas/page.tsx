@@ -1,7 +1,7 @@
 ﻿"use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { BoxSelect, Columns2, Copy, Download, ImagePlus, LoaderCircle, LocateFixed, Maximize2, MoreHorizontal, PanelLeft, PanelRight, Plus, RefreshCcw, Save, ScissorsLineDashed, Settings, Star, Trash2, Workflow, X, ZoomIn, ZoomOut } from "lucide-react";
+import { BoxSelect, Columns2, Copy, Download, ImagePlus, LoaderCircle, LocateFixed, Maximize2, MoreHorizontal, PanelLeft, PanelRight, Pencil, Plus, RefreshCcw, Save, ScissorsLineDashed, Search, Settings, Star, Trash2, Workflow, X, ZoomIn, ZoomOut } from "lucide-react";
 import { toast } from "sonner";
 
 import { ImageComposer } from "@/app/image/components/image-composer";
@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { DEFAULT_REVERSE_PROMPT_INSTRUCTION, cancelImageTasks, createImageEditTaskFromSource, createImageEditTaskFromSources, createImageGenerationTask, createReversePromptTask, fetchAccounts, fetchImageTasks, fetchReversePromptInstruction, updateReversePromptInstruction, type Account, type ImageTask } from "@/lib/api";
+import { DEFAULT_REVERSE_PROMPT_INSTRUCTION, cancelImageTasks, createImageEditTaskFromSource, createImageEditTaskFromSources, createImageGenerationTask, createImageTaskEventSource, createReversePromptTask, fetchImageProviderModels, fetchImageProviders, fetchImageTasks, fetchReversePromptInstruction, updateReversePromptInstruction, type ImageProvider, type ImageTask } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { useAuthGuard } from "@/lib/use-auth-guard";
 import {
@@ -86,11 +86,6 @@ type CanvasReferenceImage = {
   type: string;
   dataUrl: string;
 };
-
-function formatAvailableQuota(accounts: Account[]) {
-  const availableAccounts = accounts.filter((account) => account.status !== "禁用");
-  return String(availableAccounts.reduce((sum, account) => sum + Math.max(0, account.quota), 0));
-}
 
 function readFileAsDataUrl(file: File) {
   return new Promise<string>((resolve, reject) => {
@@ -179,11 +174,23 @@ function taskToImageNode(node: ImageCanvasNode, task: ImageTask): ImageCanvasNod
   const status = getTaskStatus(task);
   const progress = clampProgress(task.progress, status === "queued" ? 0 : status === "generating" ? 15 : 100);
   const progressMessage = task.progress_message || getStatusLabel(status);
+  const providerMeta = {
+    providerId: task.provider_id || node.providerId,
+    providerName: task.provider_name || node.providerName,
+    providerType: task.provider_type || node.providerType,
+    model: task.model || node.model,
+    size: task.size || node.size,
+    durationMs: task.duration_ms || node.durationMs,
+    usage: task.usage || node.usage,
+    imageWidth: task.image_width || node.imageWidth,
+    imageHeight: task.image_height || node.imageHeight,
+  };
   if (status === "success") {
     const first = task.data?.[0];
     if (!first?.b64_json && !first?.url) {
       return {
         ...node,
+        ...providerMeta,
         taskId: task.id,
         status: "error",
         progress: 100,
@@ -194,6 +201,7 @@ function taskToImageNode(node: ImageCanvasNode, task: ImageTask): ImageCanvasNod
     }
     return {
       ...node,
+      ...providerMeta,
       taskId: task.id,
       status: "success",
       progress: 100,
@@ -207,11 +215,33 @@ function taskToImageNode(node: ImageCanvasNode, task: ImageTask): ImageCanvasNod
   }
   return {
     ...node,
+    ...providerMeta,
     taskId: task.id,
     status,
     progress,
     progressMessage,
     error: status === "error" || status === "cancelled" ? task.error || getStatusLabel(status) : undefined,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function providerNodeMeta(provider: ImageProvider | null | undefined) {
+  return provider
+    ? {
+        providerId: provider.id,
+        providerName: provider.name,
+        providerType: provider.type,
+      }
+    : {};
+}
+
+function missingTaskToImageNode(node: ImageCanvasNode): ImageCanvasNode {
+  return {
+    ...node,
+    status: "error",
+    progress: 100,
+    progressMessage: "任务丢失",
+    error: "后端任务记录不存在，可能是提交任务时连接中断。请重试或删除这个节点。",
     updatedAt: new Date().toISOString(),
   };
 }
@@ -415,7 +445,16 @@ function hasMeaningfulImageNodeChange(current: ImageCanvasNode, next: ImageCanva
     current.b64_json !== next.b64_json ||
     current.url !== next.url ||
     current.revised_prompt !== next.revised_prompt ||
-    current.error !== next.error
+    current.error !== next.error ||
+    current.providerId !== next.providerId ||
+    current.providerName !== next.providerName ||
+    current.providerType !== next.providerType ||
+    current.model !== next.model ||
+    current.size !== next.size ||
+    current.imageWidth !== next.imageWidth ||
+    current.imageHeight !== next.imageHeight ||
+    current.durationMs !== next.durationMs ||
+    JSON.stringify(current.usage || null) !== JSON.stringify(next.usage || null)
   );
 }
 
@@ -442,6 +481,13 @@ function getNodePreview(node: ImageCanvasNode) {
     return `${node.progressMessage || getStatusLabel(node.status)} ${getNodeProgress(node)}%`;
   }
   return node.prompt || node.revised_prompt || node.error || node.size || getStatusLabel(node.status);
+}
+
+function getImageResolutionLabel(node: ImageCanvasNode) {
+  const width = Number(node.imageWidth || 0);
+  const height = Number(node.imageHeight || 0);
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return "";
+  return `${Math.round(width)} x ${Math.round(height)}`;
 }
 
 function getNodeCreatedTime(node: ImageCanvasNode) {
@@ -911,7 +957,6 @@ function layoutCanvasNodes(nodes: ImageCanvasNode[], edges: ImageCanvasEdge[]) {
 }
 
 function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: string }) {
-  const didLoadQuotaRef = useRef(false);
   const canvasRef = useRef<HTMLDivElement>(null);
   const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
   const composerFileInputRef = useRef<HTMLInputElement>(null);
@@ -929,6 +974,7 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
   const [leftPanelOpen, setLeftPanelOpen] = useState(false);
   const [rightPanelOpen, setRightPanelOpen] = useState(false);
   const [canvasMenuOpen, setCanvasMenuOpen] = useState(false);
+  const [canvasSearchDraft, setCanvasSearchDraft] = useState("");
   const [deleteProjectTarget, setDeleteProjectTarget] = useState<ImageCanvasProject | null>(null);
   const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>([]);
   const [deleteGroupDialogOpen, setDeleteGroupDialogOpen] = useState(false);
@@ -937,6 +983,12 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
   const [promptDraft, setPromptDraft] = useState("");
   const [countDraft, setCountDraft] = useState("1");
   const [sizeDraft, setSizeDraft] = useState("");
+  const [providers, setProviders] = useState<ImageProvider[]>([]);
+  const [selectedProviderId, setSelectedProviderId] = useState("");
+  const [defaultReverseProviderId, setDefaultReverseProviderId] = useState("");
+  const [modelDraft, setModelDraft] = useState("");
+  const [providerModels, setProviderModels] = useState<Record<string, string[]>>({});
+  const [loadingModelsProviderId, setLoadingModelsProviderId] = useState("");
   const [referenceImages, setReferenceImages] = useState<CanvasReferenceImage[]>([]);
   const [reversePromptImage, setReversePromptImage] = useState<CanvasReferenceImage | null>(null);
   const [reversePromptResult, setReversePromptResult] = useState("");
@@ -951,7 +1003,6 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
   const [compareNodeIds, setCompareNodeIds] = useState<string[]>([]);
   const [isCanvasInteracting, setIsCanvasInteracting] = useState(false);
   const [canvasViewportSize, setCanvasViewportSize] = useState({ width: 1280, height: 720 });
-  const [availableQuota, setAvailableQuota] = useState("加载中...");
 
   const activeProject = useMemo(() => findProject(projects, activeProjectId), [projects, activeProjectId]);
   const activeProjectStorageKey = `${ACTIVE_PROJECT_KEY}:${ownerKey || "default"}`;
@@ -962,8 +1013,30 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
   const successfulSelectedImage = selectedNode?.type === "image" && selectedNode.status === "success" ? selectedNode : null;
   const selectedEditNode = selectedNode?.type === "edit" ? selectedNode : null;
   const selectedPromptNode = selectedNode?.type === "prompt" ? selectedNode : null;
+  const selectedProvider = useMemo(
+    () => providers.find((provider) => provider.id === selectedProviderId) || providers.find((provider) => provider.enabled),
+    [providers, selectedProviderId],
+  );
+  const enabledProviders = useMemo(() => providers.filter((provider) => provider.enabled), [providers]);
+  const selectedReverseProvider = useMemo(
+    () =>
+      providers.find((provider) => provider.id === defaultReverseProviderId && provider.enabled) ||
+      providers.find((provider) => provider.enabled && provider.capabilities?.reverse_prompt),
+    [defaultReverseProviderId, providers],
+  );
+  const activeModel = modelDraft.trim() || selectedProvider?.default_model || "gpt-image-1";
+  const activeReversePromptModel = selectedReverseProvider?.default_model || activeModel;
+  const selectedProviderModels = selectedProvider ? providerModels[selectedProvider.id] || [] : [];
+  const currentProviderMeta = useMemo(() => providerNodeMeta(selectedProvider), [selectedProvider]);
   const runningCount = useMemo(
     () => activeProject?.nodes.filter((node) => node.type === "image" && (node.status === "queued" || node.status === "generating")).length ?? 0,
+    [activeProject],
+  );
+  const runningTaskIds = useMemo(
+    () =>
+      activeProject?.nodes.flatMap((node) =>
+        node.type === "image" && (node.status === "queued" || node.status === "generating") && node.taskId ? [node.taskId] : [],
+      ) ?? [],
     [activeProject],
   );
   const projectLightboxImages = useMemo(
@@ -1017,11 +1090,64 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
     setPromptDraft(sourceNode.prompt || "");
     setCountDraft(String(Math.max(1, Number(sourceNode.count || 1) || 1)));
     setSizeDraft(sourceNode.size || "");
+    if (sourceNode.providerId) {
+      setSelectedProviderId(sourceNode.providerId);
+    }
+    setModelDraft(String(sourceNode.model || ""));
     setReferenceImages([]);
     if (composerFileInputRef.current) {
       composerFileInputRef.current.value = "";
     }
   }, [selectedEditNode?.id, selectedPromptNode?.id]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadProviders = async () => {
+      try {
+        const data = await fetchImageProviders();
+        if (cancelled) return;
+        const enabled = data.items.filter((provider) => provider.enabled);
+        setProviders(data.items);
+        setDefaultReverseProviderId(data.default_reverse_provider_id || "");
+        const nextProviderId = data.default_provider_id || enabled[0]?.id || data.items[0]?.id || "";
+        setSelectedProviderId((current) => current || nextProviderId);
+        const defaultProvider = data.items.find((provider) => provider.id === nextProviderId);
+        setModelDraft((current) => current || defaultProvider?.default_model || "");
+      } catch (error) {
+        if (!cancelled) {
+          setProviders([]);
+          toast.error(error instanceof Error ? error.message : "读取模型服务失败");
+        }
+      }
+    };
+    void loadProviders();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const loadSelectedProviderModels = useCallback(async () => {
+    if (!selectedProvider) {
+      toast.error("请先选择模型服务");
+      return;
+    }
+    setLoadingModelsProviderId(selectedProvider.id);
+    try {
+      const data = await fetchImageProviderModels(selectedProvider.id);
+      const models = Array.from(new Set((data.items || []).map((item) => String(item || "").trim()).filter(Boolean)));
+      setProviderModels((current) => ({ ...current, [selectedProvider.id]: models }));
+      if (models.length === 0) {
+        toast.error("没有获取到模型列表");
+        return;
+      }
+      setModelDraft((current) => current || selectedProvider.default_model || models[0]);
+      toast.success(`已获取 ${models.length} 个模型`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "获取模型列表失败");
+    } finally {
+      setLoadingModelsProviderId("");
+    }
+  }, [selectedProvider]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1041,8 +1167,16 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
         }
         if (cancelled) return;
         setProjects(nextProjects);
+        const urlParams = typeof window !== "undefined" ? new URLSearchParams(window.location.search) : null;
+        const requestedProjectId = urlParams?.get("project") || "";
         const storedActiveId = typeof window !== "undefined" ? window.localStorage.getItem(activeProjectStorageKey) : null;
-        setActiveProjectId(nextProjects.some((project) => project.id === storedActiveId) ? storedActiveId : nextProjects[0].id);
+        setActiveProjectId(
+          nextProjects.some((project) => project.id === requestedProjectId)
+            ? requestedProjectId
+            : nextProjects.some((project) => project.id === storedActiveId)
+              ? storedActiveId
+              : nextProjects[0].id,
+        );
       } catch (error) {
         toast.error(error instanceof Error ? error.message : "读取画布失败");
       } finally {
@@ -1101,32 +1235,6 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
       cancelled = true;
     };
   }, []);
-
-  const loadQuota = useCallback(async () => {
-    if (!isAdmin) {
-      setAvailableQuota("--");
-      return;
-    }
-    try {
-      const data = await fetchAccounts();
-      setAvailableQuota(formatAvailableQuota(data.items));
-    } catch {
-      setAvailableQuota((current) => (current === "加载中..." ? "--" : current));
-    }
-  }, [isAdmin]);
-
-  useEffect(() => {
-    if (didLoadQuotaRef.current) return;
-    didLoadQuotaRef.current = true;
-    const handleFocus = () => {
-      void loadQuota();
-    };
-    void loadQuota();
-    window.addEventListener("focus", handleFocus);
-    return () => {
-      window.removeEventListener("focus", handleFocus);
-    };
-  }, [loadQuota]);
 
   const applyLocalProject = useCallback((project: ImageCanvasProject) => {
     activeProjectRef.current = project;
@@ -1214,22 +1322,33 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
     [updateActiveProject],
   );
 
-  const syncImageTasks = useCallback(async () => {
-    const project = activeProjectRef.current;
-    if (!project) return;
-    const taskIds = project.nodes.flatMap((node) =>
-      node.type === "image" && (node.status === "queued" || node.status === "generating") && node.taskId ? [node.taskId] : [],
-    );
-    if (taskIds.length === 0) return;
-    try {
-      const taskList = await fetchImageTasks(Array.from(new Set(taskIds)));
-      const taskMap = new Map(taskList.items.map((task) => [task.id, task]));
+  const updateImageNodeDimensions = useCallback(
+    async (node: ImageCanvasNode, image: HTMLImageElement) => {
+      if (node.type !== "image" || node.status !== "success") return;
+      const imageWidth = Math.round(image.naturalWidth || 0);
+      const imageHeight = Math.round(image.naturalHeight || 0);
+      if (imageWidth <= 0 || imageHeight <= 0) return;
+      if (node.imageWidth === imageWidth && node.imageHeight === imageHeight) return;
+      await patchImageNode(node.id, { imageWidth, imageHeight });
+    },
+    [patchImageNode],
+  );
+
+  const applyImageTaskList = useCallback(
+    async (taskList: { items?: ImageTask[]; missing_ids?: string[] }) => {
+      const project = activeProjectRef.current;
+      if (!project) return;
+      const taskMap = new Map((taskList.items || []).map((task) => [task.id, task]));
+      const missingTaskIds = new Set(taskList.missing_ids || []);
       let changed = false;
       const nodes = project.nodes.map((node) => {
-        if (!node.taskId) return node;
+        if (!node.taskId || node.type !== "image") return node;
         const task = taskMap.get(node.taskId);
-        if (!task) return node;
-        const nextNode = taskToImageNode(node, task);
+        const nextNode = task
+          ? taskToImageNode(node, task)
+          : missingTaskIds.has(node.taskId) && (node.status === "queued" || node.status === "generating")
+            ? missingTaskToImageNode(node)
+            : node;
         if (!hasMeaningfulImageNodeChange(node, nextNode)) {
           return node;
         }
@@ -1239,10 +1358,24 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
       if (changed) {
         await persistProject({ ...project, nodes });
       }
+    },
+    [persistProject],
+  );
+
+  const syncImageTasks = useCallback(async () => {
+    const project = activeProjectRef.current;
+    if (!project) return;
+    const taskIds = project.nodes.flatMap((node) =>
+      node.type === "image" && (node.status === "queued" || node.status === "generating") && node.taskId ? [node.taskId] : [],
+    );
+    if (taskIds.length === 0) return;
+    try {
+      const taskList = await fetchImageTasks(Array.from(new Set(taskIds)));
+      await applyImageTaskList(taskList);
     } catch {
       // 页面轮询失败时保留当前画布状态，下一轮继续同步。
     }
-  }, [persistProject]);
+  }, [applyImageTaskList]);
 
   useEffect(() => {
     if (!activeProject || runningCount === 0) return;
@@ -1254,6 +1387,42 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
       window.clearInterval(timer);
     };
   }, [activeProjectId, runningCount, syncImageTasks]);
+
+  useEffect(() => {
+    const ids = Array.from(new Set(runningTaskIds));
+    if (!activeProjectId || ids.length === 0) return;
+    let closed = false;
+    let source: EventSource | null = null;
+    void createImageTaskEventSource(ids).then((nextSource) => {
+      if (closed || !nextSource) {
+        nextSource?.close();
+        return;
+      }
+      source = nextSource;
+      source.addEventListener("tasks", (event) => {
+        try {
+          void applyImageTaskList(JSON.parse((event as MessageEvent).data));
+        } catch {
+          // Ignore malformed event payloads and let polling reconcile.
+        }
+      });
+      source.addEventListener("done", (event) => {
+        try {
+          void applyImageTaskList(JSON.parse((event as MessageEvent).data));
+        } catch {
+          // Ignore malformed event payloads and let polling reconcile.
+        }
+        source?.close();
+      });
+      source.onerror = () => {
+        source?.close();
+      };
+    });
+    return () => {
+      closed = true;
+      source?.close();
+    };
+  }, [activeProjectId, applyImageTaskList, runningTaskIds.join(",")]);
 
   const getCanvasPoint = useCallback(
     (clientX?: number, clientY?: number) => {
@@ -1368,11 +1537,19 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
       toast.error("请输入反推要求");
       return;
     }
+    if (!selectedReverseProvider) {
+      toast.error("请先到设置页添加并启用反推模型服务");
+      return;
+    }
+    if (!selectedReverseProvider.capabilities.reverse_prompt) {
+      toast.error("当前反推模型服务未启用反推提示词能力");
+      return;
+    }
     const taskId = createImageCanvasId();
     setIsReversingPrompt(true);
     setReversePromptTaskId(taskId);
     try {
-      const task = await createReversePromptTask(taskId, referenceImageToSource(reversePromptImage), instruction);
+      const task = await createReversePromptTask(taskId, referenceImageToSource(reversePromptImage), instruction, activeReversePromptModel, selectedReverseProvider.id);
       setReversePromptTaskId(task.id || taskId);
       if (task.status === "success") {
         const prompt = reversePromptFromTask(task);
@@ -1391,7 +1568,7 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
       setIsReversingPrompt(false);
       toast.error(error instanceof Error ? error.message : "反推失败");
     }
-  }, [reversePromptImage, reversePromptInstruction]);
+  }, [activeReversePromptModel, reversePromptImage, reversePromptInstruction, selectedReverseProvider]);
 
   const cancelReversePrompt = useCallback(async () => {
     const taskId = reversePromptTaskId;
@@ -1508,8 +1685,13 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
     }
     const project = activeProjectRef.current;
     if (!project) return;
+    if (!selectedProvider) {
+      toast.error("请先到设置页添加并启用模型服务");
+      return;
+    }
     const now = new Date().toISOString();
     const count = Number(clampCount(countDraft));
+    const batchId = createImageCanvasId();
     const anchor = getCanvasPoint();
     const promptOrigin = findNonOverlappingCanvasPosition(
       project.nodes,
@@ -1525,9 +1707,11 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
       ...nodeSize.prompt,
       title: "提示词",
       prompt,
-      model: "gpt-image-2",
+      batchId,
+      model: activeModel,
       size: sizeDraft,
       count,
+      ...currentProviderMeta,
       status: "idle",
       createdAt: now,
       updatedAt: now,
@@ -1544,8 +1728,10 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
         ...nodeSize.image,
         title: count > 1 ? `生成结果 ${index + 1}` : "生成结果",
         prompt,
-        model: "gpt-image-2",
+        batchId,
+        model: activeModel,
         size: sizeDraft,
+        ...currentProviderMeta,
         sourceNodeId: promptNodeId,
         taskId: id,
         status: "queued",
@@ -1575,7 +1761,7 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
       await Promise.all(
         imageNodes.map(async (node) => {
           try {
-            const task = await createImageGenerationTask(node.id, prompt, "gpt-image-2", sizeDraft);
+            const task = await createImageGenerationTask(node.id, prompt, activeModel, sizeDraft, undefined, selectedProvider.id);
             await patchImageNode(node.id, taskToImageNode(node, task));
           } catch (error) {
             await patchImageNode(node.id, {
@@ -1588,9 +1774,8 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
         }),
       );
       void syncImageTasks();
-      void loadQuota();
     })();
-  }, [clearComposerInputs, countDraft, getCanvasPoint, loadQuota, patchImageNode, persistProject, promptDraft, sizeDraft, syncImageTasks]);
+  }, [activeModel, clearComposerInputs, countDraft, currentProviderMeta, getCanvasPoint, patchImageNode, persistProject, promptDraft, selectedProvider, sizeDraft, syncImageTasks]);
 
   const createEditBranch = useCallback(async () => {
     if (!successfulSelectedImage && referenceImages.length === 0) {
@@ -1604,8 +1789,13 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
     }
     const project = activeProjectRef.current;
     if (!project) return;
+    if (!selectedProvider) {
+      toast.error("请先到设置页添加并启用模型服务");
+      return;
+    }
     const now = new Date().toISOString();
     const count = Number(clampCount(countDraft));
+    const batchId = createImageCanvasId();
     const anchor = getCanvasPoint();
     const uploadedGap = 32;
     const resultGap = 32;
@@ -1633,8 +1823,10 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
         ...nodeSize.image,
         title: referenceImages.length > 1 ? `参考图 ${index + 1}` : "参考图",
         prompt,
-        model: "gpt-image-2",
+        batchId,
+        model: activeModel,
         size: sizeDraft,
+        ...currentProviderMeta,
         status: "success",
         url: image.dataUrl,
         createdAt: now,
@@ -1654,8 +1846,10 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
       ...nodeSize.edit,
       title: "编辑要求",
       prompt,
-      model: "gpt-image-2",
+      batchId,
+      model: activeModel,
       size: sizeDraft,
+      ...currentProviderMeta,
       sourceNodeId: visualSourceNodes[0]?.id,
       status: "idle",
       createdAt: now,
@@ -1672,8 +1866,10 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
         ...nodeSize.image,
         title: count > 1 ? `编辑结果 ${index + 1}` : "编辑结果",
         prompt,
-        model: "gpt-image-2",
+        batchId,
+        model: activeModel,
         size: sizeDraft,
+        ...currentProviderMeta,
         sourceNodeId: editNodeId,
         taskId: resultNodeId,
         status: "queued",
@@ -1710,8 +1906,8 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
           try {
             const task =
               sourceObjects.length === 1
-                ? await createImageEditTaskFromSource(node.id, sourceObjects[0], prompt, "gpt-image-2", sizeDraft)
-                : await createImageEditTaskFromSources(node.id, sourceObjects, prompt, "gpt-image-2", sizeDraft);
+                ? await createImageEditTaskFromSource(node.id, sourceObjects[0], prompt, activeModel, sizeDraft, undefined, selectedProvider.id)
+                : await createImageEditTaskFromSources(node.id, sourceObjects, prompt, activeModel, sizeDraft, undefined, selectedProvider.id);
             await patchImageNode(node.id, taskToImageNode(node, task));
           } catch (error) {
             await patchImageNode(node.id, {
@@ -1724,9 +1920,8 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
         }),
       );
       void syncImageTasks();
-      void loadQuota();
     })();
-  }, [clearComposerInputs, countDraft, getCanvasPoint, loadQuota, patchImageNode, persistProject, promptDraft, referenceImages, sizeDraft, successfulSelectedImage, syncImageTasks]);
+  }, [activeModel, clearComposerInputs, countDraft, currentProviderMeta, getCanvasPoint, patchImageNode, persistProject, promptDraft, referenceImages, selectedProvider, sizeDraft, successfulSelectedImage, syncImageTasks]);
 
   const copySelectedPromptNodeRevision = useCallback(async () => {
     if (!selectedPromptNode) return;
@@ -1737,9 +1932,14 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
     }
     const project = activeProjectRef.current;
     if (!project) return;
+    if (!selectedProvider) {
+      toast.error("请先到设置页添加并启用模型服务");
+      return;
+    }
 
     const now = new Date().toISOString();
     const count = Number(clampCount(countDraft));
+    const batchId = createImageCanvasId();
     const existingChildren = project.edges
       .filter((edge) => edge.from === selectedPromptNode.id)
       .map((edge) => project.nodes.find((node) => node.id === edge.to))
@@ -1766,8 +1966,11 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
       y: copiedPromptPlacement.y,
       title: selectedPromptNode.title.endsWith("副本") ? selectedPromptNode.title : `${selectedPromptNode.title} 副本`,
       prompt,
+      batchId,
+      model: activeModel,
       size: sizeDraft,
       count,
+      ...currentProviderMeta,
       status: "idle",
       taskId: undefined,
       progress: undefined,
@@ -1788,8 +1991,10 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
         ...nodeSize.image,
         title: count > 1 ? `生成结果 ${index + 1}` : "生成结果",
         prompt,
-        model: copiedPromptNode.model || "gpt-image-2",
+        batchId,
+        model: activeModel,
         size: sizeDraft,
+        ...currentProviderMeta,
         sourceNodeId: copiedPromptNodeId,
         taskId: resultNodeId,
         status: "queued",
@@ -1816,7 +2021,7 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
       await Promise.all(
         resultNodes.map(async (node) => {
           try {
-            const task = await createImageGenerationTask(node.id, prompt, copiedPromptNode.model || "gpt-image-2", sizeDraft);
+            const task = await createImageGenerationTask(node.id, prompt, activeModel, sizeDraft, undefined, selectedProvider.id);
             await patchImageNode(node.id, taskToImageNode(node, task));
           } catch (error) {
             await patchImageNode(node.id, {
@@ -1829,9 +2034,8 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
         }),
       );
       void syncImageTasks();
-      void loadQuota();
     })();
-  }, [clearComposerInputs, countDraft, loadQuota, patchImageNode, persistProject, promptDraft, selectedPromptNode, sizeDraft, syncImageTasks]);
+  }, [activeModel, clearComposerInputs, countDraft, currentProviderMeta, patchImageNode, persistProject, promptDraft, selectedPromptNode, selectedProvider, sizeDraft, syncImageTasks]);
 
   const copySelectedEditNodeRevision = useCallback(async () => {
     if (!selectedEditNode) return;
@@ -1842,9 +2046,14 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
     }
     const project = activeProjectRef.current;
     if (!project) return;
+    if (!selectedProvider) {
+      toast.error("请先到设置页添加并启用模型服务");
+      return;
+    }
 
     const now = new Date().toISOString();
     const count = Number(clampCount(countDraft));
+    const batchId = createImageCanvasId();
     const parentIds = project.edges.filter((edge) => edge.to === selectedEditNode.id).map((edge) => edge.from);
     const parentImageNodes = parentIds
       .map((id) => project.nodes.find((node) => node.id === id))
@@ -1885,8 +2094,11 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
       y: copiedEditPlacement.y,
       title: selectedEditNode.title.endsWith("副本") ? selectedEditNode.title : `${selectedEditNode.title} 副本`,
       prompt,
+      batchId,
+      model: activeModel,
       size: sizeDraft,
       count,
+      ...currentProviderMeta,
       sourceNodeId: parentIds[0],
       createdAt: now,
       updatedAt: now,
@@ -1904,8 +2116,10 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
         ...nodeSize.image,
         title: referenceImages.length > 1 ? `补充参考图 ${index + 1}` : "补充参考图",
         prompt,
-        model: "gpt-image-2",
+        batchId,
+        model: activeModel,
         size: sizeDraft,
+        ...currentProviderMeta,
         status: "success",
         url: image.dataUrl,
         createdAt: now,
@@ -1925,8 +2139,10 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
         ...nodeSize.image,
         title: count > 1 ? `编辑结果 ${index + 1}` : "编辑结果",
         prompt,
-        model: "gpt-image-2",
+        batchId,
+        model: activeModel,
         size: sizeDraft,
+        ...currentProviderMeta,
         sourceNodeId: copiedEditNodeId,
         taskId: resultNodeId,
         status: "queued",
@@ -1962,8 +2178,8 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
           try {
             const task =
               sourceObjects.length === 1
-                ? await createImageEditTaskFromSource(node.id, sourceObjects[0], prompt, "gpt-image-2", sizeDraft)
-                : await createImageEditTaskFromSources(node.id, sourceObjects, prompt, "gpt-image-2", sizeDraft);
+                ? await createImageEditTaskFromSource(node.id, sourceObjects[0], prompt, activeModel, sizeDraft, undefined, selectedProvider.id)
+                : await createImageEditTaskFromSources(node.id, sourceObjects, prompt, activeModel, sizeDraft, undefined, selectedProvider.id);
             await patchImageNode(node.id, taskToImageNode(node, task));
           } catch (error) {
             await patchImageNode(node.id, {
@@ -1976,9 +2192,8 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
         }),
       );
       void syncImageTasks();
-      void loadQuota();
     })();
-  }, [clearComposerInputs, countDraft, loadQuota, patchImageNode, persistProject, promptDraft, referenceImages, selectedEditNode, sizeDraft, syncImageTasks]);
+  }, [activeModel, clearComposerInputs, countDraft, currentProviderMeta, patchImageNode, persistProject, promptDraft, referenceImages, selectedEditNode, selectedProvider, sizeDraft, syncImageTasks]);
 
   const handleComposerSubmit = useCallback(async () => {
     if (selectedEditNode) {
@@ -2026,10 +2241,22 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
         await patchImageNode(node.id, { status: "error", progress: 100, progressMessage: "失败", error: "找不到来源节点" });
         return;
       }
+      const retryProviderId = sourceNode.providerId || node.providerId || "";
+      const retryProvider = providers.find((provider) => provider.id === retryProviderId && provider.enabled) || selectedProvider;
+      if (!retryProvider) {
+        await patchImageNode(node.id, { status: "error", progress: 100, progressMessage: "失败", error: "请先到设置页添加并启用模型服务" });
+        return;
+      }
+      const retryModel = sourceNode.model || node.model || retryProvider.default_model || activeModel;
+      const retrySize = sourceNode.size ?? node.size;
+      const retryProviderMeta = providerNodeMeta(retryProvider);
 
       const taskId = createImageCanvasId();
       const queuedNode: ImageCanvasNode = {
         ...node,
+        ...retryProviderMeta,
+        model: retryModel,
+        size: retrySize,
         taskId,
         status: "queued",
         progress: 0,
@@ -2047,8 +2274,10 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
           const task = await createImageGenerationTask(
             taskId,
             sourceNode.prompt || node.prompt || "",
-            sourceNode.model || node.model || "gpt-image-2",
-            sourceNode.size ?? node.size,
+            retryModel,
+            retrySize,
+            undefined,
+            retryProvider.id,
           );
           await patchImageNode(node.id, taskToImageNode(queuedNode, task));
           void syncImageTasks();
@@ -2076,15 +2305,19 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
                   taskId,
                   imageSources[0],
                   sourceNode.prompt || node.prompt || "",
-                  sourceNode.model || node.model || "gpt-image-2",
-                  sourceNode.size ?? node.size,
+                  retryModel,
+                  retrySize,
+                  undefined,
+                  retryProvider.id,
                 )
               : await createImageEditTaskFromSources(
                   taskId,
                   imageSources,
                   sourceNode.prompt || node.prompt || "",
-                  sourceNode.model || node.model || "gpt-image-2",
-                  sourceNode.size ?? node.size,
+                  retryModel,
+                  retrySize,
+                  undefined,
+                  retryProvider.id,
                 );
           await patchImageNode(node.id, taskToImageNode(queuedNode, task));
           void syncImageTasks();
@@ -2101,7 +2334,7 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
         });
       }
     },
-    [patchImageNode, syncImageTasks],
+    [activeModel, patchImageNode, providers, selectedProvider, syncImageTasks],
   );
 
   const deleteNode = useCallback(async (nodeId: string) => {
@@ -2264,6 +2497,45 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
     },
     [updateViewport],
   );
+
+  const searchAndFocusCanvasNode = useCallback(async () => {
+    const project = activeProjectRef.current;
+    const query = canvasSearchDraft.trim().toLowerCase();
+    if (!project || !query) return;
+    const match = project.nodes.find((node) =>
+      [
+        node.title,
+        node.prompt,
+        node.revised_prompt,
+        node.error,
+        node.providerName,
+        node.model,
+        node.size,
+        node.batchId,
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase()
+        .includes(query),
+    );
+    if (!match) {
+      toast.error("没有找到匹配节点");
+      return;
+    }
+    await focusCanvasNode(match.id);
+  }, [canvasSearchDraft, focusCanvasNode]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || isLoading || !activeProjectId) return;
+    const params = new URLSearchParams(window.location.search);
+    const nodeId = params.get("node");
+    if (!nodeId) return;
+    const timer = window.setTimeout(() => {
+      void focusCanvasNode(nodeId);
+      window.history.replaceState(null, "", "/canvas");
+    }, 120);
+    return () => window.clearTimeout(timer);
+  }, [activeProjectId, focusCanvasNode, isLoading]);
 
   const fitCanvasToNodes = useCallback(async () => {
     const project = activeProjectRef.current;
@@ -2444,24 +2716,32 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
       const target = event.target as HTMLElement | null;
       const isTyping = Boolean(target?.closest("input, textarea, [contenteditable='true']"));
       if (isTyping) return;
-      if (event.key === "Escape" && selectedGroupIds.length > 0) {
+      if (event.key === "Escape" && (selectedGroupIds.length > 0 || selectedNode)) {
         event.preventDefault();
         setSelectedGroupIds([]);
+        setSelectedNodeId(null);
         setDeleteGroupDialogOpen(false);
         return;
       }
-      if ((event.key === "Delete" || event.key === "Backspace") && selectedGroupIds.length > 0) {
+      if (event.key === "Delete" || event.key === "Backspace") {
         event.preventDefault();
-        if (selectedGroupIds.length === 1) {
-          void deleteNodeGroup(selectedGroupIds);
+        if (selectedGroupIds.length > 0) {
+          if (selectedGroupIds.length === 1) {
+            void deleteNodeGroup(selectedGroupIds);
+            return;
+          }
+          setDeleteGroupDialogOpen(true);
           return;
         }
-        setDeleteGroupDialogOpen(true);
+        if (selectedNode) {
+          void deleteSelectedNode();
+          return;
+        }
       }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [deleteNodeGroup, selectedGroupIds]);
+  }, [deleteNodeGroup, deleteSelectedNode, selectedGroupIds, selectedNode]);
 
   if (isLoading) {
     return (
@@ -2502,6 +2782,10 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
   const visibleEdges = shouldCullCanvas ? activeProject.edges.filter((edge) => visibleNodeSet.has(edge.from) && visibleNodeSet.has(edge.to)) : activeProject.edges;
   const skipEdgeGlow = isLiteCanvas || visibleEdges.length > 80;
   const deferImagePreviews = isCanvasInteracting && activeProject.nodes.length > 16;
+  const nodeActionButtonClass = "size-7 shrink-0 rounded-full p-0";
+  const nodeActionIconClass = "size-3.5";
+  const neutralNodeActionClass = "border-stone-200 bg-white text-stone-500 hover:bg-stone-50 hover:text-stone-950";
+  const deleteNodeActionClass = "border-red-500 bg-red-500 text-white hover:border-red-600 hover:bg-red-600 hover:text-white";
 
   return (
     <>
@@ -2676,7 +2960,8 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
                 type="button"
                 className="h-9 rounded-xl bg-stone-950 text-xs text-white hover:bg-stone-800"
                 onClick={() => void runReversePrompt()}
-                disabled={!reversePromptImage || isReversingPrompt || isLoadingReversePromptInstruction}
+                disabled={!reversePromptImage || isReversingPrompt || isLoadingReversePromptInstruction || !selectedReverseProvider?.capabilities.reverse_prompt}
+                title={!selectedReverseProvider?.capabilities.reverse_prompt ? "当前反推模型服务未启用反推提示词能力" : undefined}
               >
                 {isReversingPrompt ? <LoaderCircle className="size-3.5 animate-spin" /> : null}
                 {isReversingPrompt ? "反推中" : "反推提示词"}
@@ -2764,6 +3049,28 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
           </div>
 
           <div className="flex shrink-0 flex-wrap justify-end gap-2">
+            <div className="hidden h-9 w-[min(260px,32vw)] items-center gap-2 rounded-full border border-stone-200 bg-white/95 px-3 shadow-sm backdrop-blur md:flex">
+              <Search className="size-4 shrink-0 text-stone-400" />
+              <input
+                value={canvasSearchDraft}
+                onChange={(event) => setCanvasSearchDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    void searchAndFocusCanvasNode();
+                  }
+                }}
+                placeholder="搜索节点"
+                className="min-w-0 flex-1 bg-transparent text-xs text-stone-700 outline-none placeholder:text-stone-400"
+              />
+              <button
+                type="button"
+                className="rounded-full px-1.5 py-0.5 text-[11px] font-medium text-stone-500 transition hover:bg-stone-100 hover:text-stone-950"
+                onClick={() => void searchAndFocusCanvasNode()}
+              >
+                定位
+              </button>
+            </div>
             <Button variant="outline" className={cn("h-9 rounded-full border-stone-200 bg-white/95 px-3 backdrop-blur", leftPanelOpen && "border-stone-900 text-stone-950")} onClick={() => setLeftPanelOpen((open) => !open)}>
               <PanelLeft className="size-4" />
               <span className="hidden md:inline">项目</span>
@@ -2907,7 +3214,6 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
             prompt={promptDraft}
             imageCount={countDraft}
             imageSize={sizeDraft}
-            availableQuota={availableQuota}
             activeTaskCount={runningCount}
             referenceImages={referenceImages}
             textareaRef={composerTextareaRef}
@@ -2916,6 +3222,23 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
             onImageCountChange={(value) => setCountDraft(value ? clampCount(value) : "")}
             onImageSizeChange={setSizeDraft}
             onSubmit={handleComposerSubmit}
+            providerOptions={enabledProviders.map((provider) => ({
+              id: provider.id,
+              name: provider.name,
+              enabled: provider.enabled,
+              default_model: provider.default_model,
+            }))}
+            selectedProviderId={selectedProvider?.id || selectedProviderId}
+            modelValue={modelDraft}
+            modelOptions={selectedProviderModels}
+            isLoadingModels={Boolean(selectedProvider && loadingModelsProviderId === selectedProvider.id)}
+            onProviderChange={(providerId) => {
+              setSelectedProviderId(providerId);
+              const provider = providers.find((item) => item.id === providerId);
+              setModelDraft(provider?.default_model || "");
+            }}
+            onModelChange={setModelDraft}
+            onFetchModels={loadSelectedProviderModels}
             onPickReferenceImage={() => composerFileInputRef.current?.click()}
             onReferenceImageChange={appendReferenceImages}
             onRemoveReferenceImage={handleRemoveReferenceImage}
@@ -2987,6 +3310,7 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
 
             {visibleNodes.map((node) => {
               const imageSrc = node.type === "image" ? getImageNodeSrc(node) : "";
+              const imageResolutionLabel = node.type === "image" ? getImageResolutionLabel(node) : "";
               const nodeProgress = getNodeProgress(node);
               const nodeProgressMessage = node.progressMessage || getStatusLabel(node.status);
               const isSelected = node.id === selectedNodeId;
@@ -3084,7 +3408,17 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
                               </div>
                             ) : (
                               <>
-                                <img src={imageSrc} alt={node.title} className="h-full w-full object-contain" draggable={false} loading="lazy" decoding="async" />
+                                <img
+                                  src={imageSrc}
+                                  alt={node.title}
+                                  className="h-full w-full object-contain"
+                                  draggable={false}
+                                  loading="lazy"
+                                  decoding="async"
+                                  onLoad={(event) => {
+                                    void updateImageNodeDimensions(node, event.currentTarget);
+                                  }}
+                                />
                                 <span className="absolute right-2 top-2 inline-flex size-7 items-center justify-center rounded-full bg-black/45 text-white opacity-0 shadow-sm transition group-hover:opacity-100">
                                   <ZoomIn className="size-3.5" />
                                 </span>
@@ -3104,52 +3438,89 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
                           </div>
                         )}
                       </div>
-                      <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
-                        <span className="min-w-0 truncate text-xs text-stone-500">{node.size || "未指定比例"}</span>
-                        <div className="flex items-center gap-1">
+                      <div className="mt-3 space-y-2">
+                        <span className="block min-w-0 truncate text-xs leading-4 text-stone-500">
+                          {node.size || "未指定比例"}
+                          {node.providerName ? ` · ${node.providerName}` : ""}
+                          {imageResolutionLabel ? ` · ${imageResolutionLabel}` : ""}
+                        </span>
+                        <div className="ml-auto flex w-fit max-w-full items-center gap-1 rounded-full bg-stone-50/90 p-0.5 ring-1 ring-stone-100">
                           {node.status === "success" ? (
                             <>
                               <Button
                                 variant="outline"
-                                className={cn("h-8 rounded-full border-stone-200 px-2.5 text-xs", node.favorite ? "border-amber-200 bg-amber-50 text-amber-700" : "")}
+                                className={cn(nodeActionButtonClass, neutralNodeActionClass, node.favorite ? "border-amber-300 bg-amber-50 text-amber-700 hover:bg-amber-100 hover:text-amber-800" : "")}
+                                title={node.favorite ? "取消收藏" : "收藏"}
+                                aria-label={node.favorite ? "取消收藏" : "收藏"}
                                 onClick={(event) => {
                                   event.stopPropagation();
                                   void toggleNodeFavorite(node);
                                 }}
                               >
-                                <Star className={cn("size-3.5", node.favorite ? "fill-current" : "")} />
+                                <Star className={cn(nodeActionIconClass, node.favorite ? "fill-current" : "")} />
                               </Button>
                               <Button
                                 variant="outline"
-                                className={cn("h-8 rounded-full border-stone-200 px-2.5 text-xs", isCompareSelected ? "border-blue-200 bg-blue-50 text-blue-700" : "")}
+                                className={cn(nodeActionButtonClass, neutralNodeActionClass, isCompareSelected ? "border-blue-300 bg-blue-50 text-blue-700 hover:bg-blue-100 hover:text-blue-800" : "")}
                                 title="加入版本对比"
+                                aria-label="加入版本对比"
                                 onClick={(event) => {
                                   event.stopPropagation();
                                   toggleCompareNode(node);
                                 }}
                               >
-                                <Columns2 className="size-3.5" />
-                              </Button>
-                              <Button variant="outline" className="h-8 rounded-full border-stone-200 px-2.5 text-xs" onClick={() => void downloadImageNode(node)}>
-                                <Download className="size-3.5" />
+                                <Columns2 className={nodeActionIconClass} />
                               </Button>
                               <Button
                                 variant="outline"
-                                className="h-8 rounded-full border-stone-200 px-3 text-xs"
+                                className={cn(nodeActionButtonClass, neutralNodeActionClass)}
+                                title="下载图片"
+                                aria-label="下载图片"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  void downloadImageNode(node);
+                                }}
+                              >
+                                <Download className={nodeActionIconClass} />
+                              </Button>
+                              <Button
+                                variant="outline"
+                                className={cn(nodeActionButtonClass, "border-blue-200 bg-white text-blue-700 hover:bg-blue-50 hover:text-blue-800")}
+                                title="重新生成"
+                                aria-label="重新生成"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  void retryImageNode(node);
+                                }}
+                              >
+                                <RefreshCcw className={nodeActionIconClass} />
+                              </Button>
+                              <Button
+                                variant="outline"
+                                className={cn(nodeActionButtonClass, neutralNodeActionClass)}
+                                title="复制图片节点"
+                                aria-label="复制图片节点"
                                 onClick={(event) => {
                                   event.stopPropagation();
                                   void copyImageNode(node);
                                 }}
                               >
-                                <Copy className="size-3.5" />
-                                复制
+                                <Copy className={nodeActionIconClass} />
                               </Button>
-                              <Button className="h-8 rounded-full bg-stone-950 px-3 text-xs text-white hover:bg-stone-800" onClick={() => setSelectedNodeId(node.id)}>
-                                编辑
+                              <Button
+                                className={cn(nodeActionButtonClass, "border border-stone-950 bg-stone-950 text-white hover:bg-stone-800 hover:text-white")}
+                                title="编辑图片"
+                                aria-label="编辑图片"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  setSelectedNodeId(node.id);
+                                }}
+                              >
+                                <Pencil className={nodeActionIconClass} />
                               </Button>
                               <Button
                                 variant="outline"
-                                className="h-8 rounded-full border-rose-200 px-2.5 text-xs text-rose-700 hover:bg-rose-50"
+                                className={cn(nodeActionButtonClass, deleteNodeActionClass)}
                                 title="删除节点"
                                 aria-label="删除节点"
                                 onClick={(event) => {
@@ -3157,30 +3528,47 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
                                   void deleteNode(node.id);
                                 }}
                               >
-                                <Trash2 className="size-3.5" />
+                                <Trash2 className={nodeActionIconClass} />
                               </Button>
                             </>
                           ) : node.status === "queued" || node.status === "generating" ? (
-                            <Button variant="outline" className="h-8 rounded-full border-stone-200 px-3 text-xs" onClick={() => void cancelNodeTask(node)}>
-                              <X className="size-3.5" />
-                              取消
+                            <Button
+                              variant="outline"
+                              className={cn(nodeActionButtonClass, neutralNodeActionClass)}
+                              title="取消任务"
+                              aria-label="取消任务"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                void cancelNodeTask(node);
+                              }}
+                            >
+                              <X className={nodeActionIconClass} />
                             </Button>
                           ) : node.status === "error" || node.status === "cancelled" ? (
                             <>
-                              <Button variant="outline" className="h-8 rounded-full border-stone-200 px-3 text-xs" onClick={() => void retryImageNode(node)}>
-                                <RefreshCcw className="size-3.5" />
-                                重试
+                              <Button
+                                variant="outline"
+                                className={cn(nodeActionButtonClass, "border-blue-200 bg-white text-blue-700 hover:bg-blue-50 hover:text-blue-800")}
+                                title="重试"
+                                aria-label="重试"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  void retryImageNode(node);
+                                }}
+                              >
+                                <RefreshCcw className={nodeActionIconClass} />
                               </Button>
                               <Button
                                 variant="outline"
-                                className="h-8 rounded-full border-rose-200 px-3 text-xs text-rose-700 hover:bg-rose-50"
+                                className={cn(nodeActionButtonClass, deleteNodeActionClass)}
+                                title="删除节点"
+                                aria-label="删除节点"
                                 onClick={(event) => {
                                   event.stopPropagation();
                                   void deleteNode(node.id);
                                 }}
                               >
-                                <Trash2 className="size-3.5" />
-                                删除
+                                <Trash2 className={nodeActionIconClass} />
                               </Button>
                             </>
                           ) : null}
@@ -3191,7 +3579,10 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
                     <div className="space-y-3 p-4">
                       <p className="line-clamp-6 whitespace-pre-wrap text-sm leading-6 text-stone-700">{node.prompt || "暂无提示词"}</p>
                       <div className="flex items-center justify-between gap-2 text-xs text-stone-400">
-                        <span>{node.size || "未指定比例"}</span>
+                        <span className="min-w-0 truncate">
+                          {node.size || "未指定比例"}
+                          {node.providerName ? ` · ${node.providerName}` : ""}
+                        </span>
                         <span>{formatTime(node.createdAt)}</span>
                       </div>
                     </div>
@@ -3479,3 +3870,4 @@ export default function CanvasPage() {
 
   return <CanvasPageContent isAdmin={session.role === "admin"} ownerKey={`${session.role}:${session.subjectId || session.name || "default"}`} />;
 }
+

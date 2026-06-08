@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -84,6 +85,51 @@ class ImageServiceOwnerTests(unittest.TestCase):
                 self.assertEqual(result["removed"], 0)
                 self.assertFalse(image_service.image_path_is_accessible(str(owner_b_path), {"id": "owner-a", "role": "user"}))
                 self.assertTrue(image_service.image_path_is_accessible(str(owner_b_path), {"id": "owner-b", "role": "user"}))
+
+    def test_list_images_includes_canvas_node_reference(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            cfg = fake_config(tmp_dir)
+            data_dir = Path(tmp_dir) / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            with (
+                mock.patch.object(conversation, "config", cfg),
+                mock.patch.object(image_service, "config", cfg),
+                mock.patch.object(image_service, "DATA_DIR", data_dir),
+            ):
+                url = conversation.save_image_bytes(PNG_1X1, "http://local.test", owner_id="owner-a")
+                rel = url.split("/images/", 1)[1]
+                (data_dir / "image_canvas_projects.json").write_text(
+                    json.dumps(
+                        {
+                            "projects": [
+                                {
+                                    "id": "project-1",
+                                    "title": "Canvas One",
+                                    "owner_id": "owner-a",
+                                    "nodes": [
+                                        {
+                                            "id": "node-1",
+                                            "type": "image",
+                                            "title": "Result One",
+                                            "url": f"http://local.test/images/{rel}",
+                                        }
+                                    ],
+                                }
+                            ]
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+
+                items = image_service.list_images(
+                    "http://local.test",
+                    identity={"id": "owner-a", "role": "user"},
+                )["items"]
+
+        self.assertEqual(items[0]["canvas_project_id"], "project-1")
+        self.assertEqual(items[0]["canvas_project_title"], "Canvas One")
+        self.assertEqual(items[0]["canvas_node_id"], "node-1")
+        self.assertEqual(items[0]["canvas_node_title"], "Result One")
 
 
 if __name__ == "__main__":

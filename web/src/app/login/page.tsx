@@ -141,7 +141,7 @@ export default function LoginPage() {
               </h1>
               <p className="text-sm leading-6 text-stone-500">
                 {isSetup
-                  ? "请先设置管理员密码。设置完成后，后续登录和 OpenAI 兼容接口都使用这个密码。"
+                  ? "请先设置管理员密码。设置完成后，后续网页登录都使用这个密码。"
                   : "输入管理员密码或用户密钥后继续使用。"}
               </p>
             </div>

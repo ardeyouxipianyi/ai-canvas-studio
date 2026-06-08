@@ -197,7 +197,7 @@ export function UserKeysCard() {
               </div>
               <div>
                 <h2 className="text-lg font-semibold tracking-tight">用户密钥管理</h2>
-                <p className="text-sm text-stone-500">为普通用户创建专用密钥；普通用户只能进入画图和画布，不能查看设置和号池。</p>
+                <p className="text-sm text-stone-500">为普通用户创建专用密钥；普通用户只能进入图片创作页面，不能查看设置。</p>
               </div>
             </div>
             <Button className="h-9 rounded-xl bg-stone-950 px-4 text-white hover:bg-stone-800" onClick={() => setIsDialogOpen(true)}>

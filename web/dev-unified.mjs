@@ -9,7 +9,7 @@ const publicHost = process.env.CHATGPT2API_PUBLIC_HOST || "0.0.0.0";
 const nextHost = process.env.CHATGPT2API_NEXT_HOST || "127.0.0.1";
 const backendOrigin = new URL(process.env.CHATGPT2API_BACKEND_URL || "http://127.0.0.1:8000");
 const webDir = dirname(fileURLToPath(import.meta.url));
-const apiPrefixes = ["/v1/", "/api/", "/auth/", "/images/", "/image-thumbnails/"];
+const apiPrefixes = ["/api/", "/auth/", "/images/", "/image-thumbnails/"];
 const apiExact = new Set(["/version"]);
 const handledSocketErrors = new WeakSet();
 

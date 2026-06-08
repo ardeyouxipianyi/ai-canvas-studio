@@ -2,24 +2,20 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { AccountsPageContent } from "@/app/accounts/accounts-page-content";
 import { ImageManagerContent } from "@/app/image-manager/image-manager-content";
 import { LogsContent } from "@/app/logs/logs-content";
 import { cn } from "@/lib/utils";
 import { AdminPasswordCard } from "./components/admin-password-card";
 import { BackupSettingsCard } from "./components/backup-settings-card";
 import { ConfigCard } from "./components/config-card";
-import { CPAPoolDialog } from "./components/cpa-pool-dialog";
-import { CPAPoolsCard } from "./components/cpa-pools-card";
 import { DataTransferCard } from "./components/data-transfer-card";
-import { ImportBrowserDialog } from "./components/import-browser-dialog";
+import { ImageProvidersCard } from "./components/image-providers-card";
 import { SettingsAdminFrame } from "./components/settings-admin-frame";
 import type { SettingsSectionId } from "./components/settings-section-shell";
-import { Sub2APIConnections } from "./components/sub2api-connections";
 import { UserKeysCard } from "./components/user-keys-card";
 import { useSettingsStore } from "./store";
 
-const validSectionIds = new Set<SettingsSectionId>(["base", "accounts", "images", "logs"]);
+const validSectionIds = new Set<SettingsSectionId>(["base", "images", "logs"]);
 
 function normalizeSectionId(value: string | null | undefined): SettingsSectionId {
   const candidate = String(value || "").replace(/^#/, "").trim();
@@ -37,9 +33,7 @@ function paneClass(active: boolean) {
 function SettingsDataController() {
   const didLoadRef = useRef(false);
   const initialize = useSettingsStore((state) => state.initialize);
-  const loadPools = useSettingsStore((state) => state.loadPools);
   const loadBackups = useSettingsStore((state) => state.loadBackups);
-  const pools = useSettingsStore((state) => state.pools);
   const backupState = useSettingsStore((state) => state.backupState);
 
   useEffect(() => {
@@ -49,21 +43,6 @@ function SettingsDataController() {
     didLoadRef.current = true;
     void initialize();
   }, [initialize]);
-
-  useEffect(() => {
-    const hasRunningJobs = pools.some((pool) => {
-      const status = pool.import_job?.status;
-      return status === "pending" || status === "running";
-    });
-    if (!hasRunningJobs) {
-      return;
-    }
-
-    const timer = window.setInterval(() => {
-      void loadPools(true);
-    }, 1500);
-    return () => window.clearInterval(timer);
-  }, [loadPools, pools]);
 
   useEffect(() => {
     if (!backupState?.running) {
@@ -86,7 +65,11 @@ function SettingsPageContent() {
 
   useEffect(() => {
     const syncFromLocation = () => {
-      setActiveSectionId(normalizeSectionId(window.location.hash));
+      const normalized = normalizeSectionId(window.location.hash);
+      setActiveSectionId(normalized);
+      if (normalized === "base" && window.location.hash && window.location.hash !== "#base") {
+        window.history.replaceState(null, "", "/settings");
+      }
     };
     syncFromLocation();
     window.addEventListener("hashchange", syncFromLocation);
@@ -114,7 +97,6 @@ function SettingsPageContent() {
   const hasVisited = useMemo(
     () => ({
       base: visitedSectionIds.has("base"),
-      accounts: visitedSectionIds.has("accounts"),
       images: visitedSectionIds.has("images"),
       logs: visitedSectionIds.has("logs"),
     }),
@@ -127,21 +109,13 @@ function SettingsPageContent() {
       {hasVisited.base ? (
         <div className={paneClass(activeSectionId === "base")}>
           <section className="space-y-4">
+            <ImageProvidersCard />
             <ConfigCard />
             <AdminPasswordCard />
             <DataTransferCard />
             <BackupSettingsCard />
             <UserKeysCard />
-            <CPAPoolsCard />
-            <Sub2APIConnections />
           </section>
-          <CPAPoolDialog />
-          <ImportBrowserDialog />
-        </div>
-      ) : null}
-      {hasVisited.accounts ? (
-        <div className={paneClass(activeSectionId === "accounts")}>
-          <AccountsPageContent />
         </div>
       ) : null}
       {hasVisited.images ? (

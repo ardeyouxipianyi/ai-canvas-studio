@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { CalendarDays, ChevronLeft, ChevronRight, Copy, Download, ImageIcon, LoaderCircle, Maximize2, Plus, RefreshCw, Search, Tag, Trash2, X } from "lucide-react";
+import { CalendarDays, ChevronLeft, ChevronRight, Copy, Download, ImageIcon, LoaderCircle, LocateFixed, Maximize2, Plus, RefreshCw, Search, Tag, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { DateRangeFilter } from "@/components/date-range-filter";
@@ -98,14 +98,22 @@ export function ImageManagerContent() {
   const loadImages = async () => {
     setIsLoading(true);
     try {
-      const [data, tagsData] = await Promise.all([
-        fetchManagedImages({ start_date: startDate, end_date: endDate }),
-        fetchImageTags(),
-      ]);
+      const data = await fetchManagedImages({ start_date: startDate, end_date: endDate });
       setItems(data.items);
-      setAllTags(tagsData.tags);
       setSelectedPaths((current) => current.filter((path) => data.items.some((item) => imageKey(item) === path)));
       setPage(1);
+
+      try {
+        const tagsData = await fetchImageTags();
+        setAllTags(tagsData.tags);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "";
+        if (message.toLowerCase().includes("not found")) {
+          setAllTags([]);
+        } else {
+          toast.error(message || "加载图片标签失败");
+        }
+      }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "加载图片失败");
     } finally {
@@ -424,6 +432,19 @@ export function ImageManagerContent() {
                       >
                         <Download className="size-4" />
                       </Button>
+                      {item.canvas_project_id && item.canvas_node_id ? (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="size-8 rounded-lg text-blue-500 hover:bg-blue-50 hover:text-blue-700"
+                          onClick={() => {
+                            window.location.href = `/canvas?project=${encodeURIComponent(item.canvas_project_id || "")}&node=${encodeURIComponent(item.canvas_node_id || "")}`;
+                          }}
+                          title="定位到画布节点"
+                        >
+                          <LocateFixed className="size-4" />
+                        </Button>
+                      ) : null}
                       <Button
                         variant="ghost"
                         size="icon"

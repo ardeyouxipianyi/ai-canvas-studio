@@ -18,14 +18,14 @@ class AuthServiceUsageTests(unittest.TestCase):
             self.assertIsNotNone(identity)
             service.record_usage(
                 identity or {},
-                endpoint="/v1/images/generations",
+                endpoint="/api/image-tasks/generations",
                 status="success",
                 duration_ms=1200,
                 generated_images=2,
             )
             service.record_usage(
                 identity or {},
-                endpoint="/v1/chat/completions",
+                endpoint="/api/settings",
                 status="failed",
                 duration_ms=800,
             )

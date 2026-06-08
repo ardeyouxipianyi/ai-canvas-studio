@@ -77,10 +77,10 @@ export function TopNav() {
             href="/canvas"
             className="shrink-0 py-1 text-[15px] font-bold tracking-tight text-stone-950 transition hover:text-stone-700"
           >
-            chatgpt2api
+            AI 画布工作台
           </Link>
           <a
-            href="https://github.com/basketikun/chatgpt2api"
+            href="https://github.com/ardeyouxipianyi/chatgpt2api"
             target="_blank"
             rel="noreferrer"
             className="inline-flex items-center gap-1.5 py-1 text-sm text-stone-400 transition hover:text-stone-700"

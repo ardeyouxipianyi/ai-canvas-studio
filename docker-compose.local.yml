@@ -3,8 +3,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: chatgpt2api:local
-    container_name: chatgpt2api-local
+    image: ai-canvas-studio:local
+    container_name: ai-canvas-studio-local
     ports:
       - "8000:80"
     volumes:

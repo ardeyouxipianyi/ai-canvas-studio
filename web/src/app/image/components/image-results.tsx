@@ -79,7 +79,7 @@ function formatImageError(message?: string) {
     return text;
   }
   if (lowerText.includes("no available image quota")) {
-    return "暂无可用绘图额度，请刷新号池或切换账号后重试。";
+    return "当前模型服务没有可用图片额度，请检查 Provider 配置或上游余额。";
   }
   if (lowerText.includes("image task returned no image data") || text.includes("未返回图片数据")) {
     return "上游没有返回图片数据，请稍后重试。";

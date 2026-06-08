@@ -1,5 +1,5 @@
-"use client";
+import { redirect } from "next/navigation";
 
-import AccountsLegacyRedirect from "./accounts-page-content";
-
-export default AccountsLegacyRedirect;
+export default function AccountsRemovedPage() {
+  redirect("/settings");
+}

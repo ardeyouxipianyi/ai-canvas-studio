@@ -66,7 +66,7 @@ export function AdminPasswordCard() {
           </div>
           <div>
             <h2 className="text-base font-semibold text-stone-950">管理员密码</h2>
-            <p className="mt-1 text-sm text-stone-500">修改后，网页登录和 OpenAI 兼容接口的管理员密钥会一起变更。</p>
+            <p className="mt-1 text-sm text-stone-500">修改后，网页登录的管理员密码会一起变更。</p>
           </div>
         </div>
 

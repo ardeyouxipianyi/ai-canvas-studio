@@ -18,6 +18,10 @@ export type ImageCanvasNode = {
   height: number;
   title: string;
   prompt?: string;
+  batchId?: string;
+  providerId?: string;
+  providerName?: string;
+  providerType?: string;
   model?: ImageModel;
   size?: string;
   count?: number;
@@ -28,6 +32,10 @@ export type ImageCanvasNode = {
   progressMessage?: string;
   b64_json?: string;
   url?: string;
+  imageWidth?: number;
+  imageHeight?: number;
+  durationMs?: number;
+  usage?: Record<string, unknown>;
   revised_prompt?: string;
   error?: string;
   favorite?: boolean;
@@ -103,6 +111,11 @@ function normalizeProgress(value: unknown, fallback: number) {
   return Math.max(0, Math.min(100, Math.round(normalizeNumber(value, fallback))));
 }
 
+function normalizePositiveInteger(value: unknown) {
+  const numberValue = normalizeNumber(value, 0);
+  return numberValue > 0 ? Math.round(numberValue) : undefined;
+}
+
 function normalizeNode(node: ImageCanvasNode & Record<string, unknown>): ImageCanvasNode {
   const now = new Date().toISOString();
   const type: ImageCanvasNodeType = node.type === "edit" || node.type === "image" ? node.type : "prompt";
@@ -129,6 +142,10 @@ function normalizeNode(node: ImageCanvasNode & Record<string, unknown>): ImageCa
     height: normalizeNumber(node.height, type === "image" ? 260 : 220),
     title: String(node.title || (type === "edit" ? "编辑节点" : type === "image" ? "图片结果" : "提示词节点")),
     prompt: typeof node.prompt === "string" ? node.prompt : undefined,
+    batchId: typeof node.batchId === "string" ? node.batchId : undefined,
+    providerId: typeof node.providerId === "string" ? node.providerId : undefined,
+    providerName: typeof node.providerName === "string" ? node.providerName : undefined,
+    providerType: typeof node.providerType === "string" ? node.providerType : undefined,
     model: (node.model as ImageModel) || "gpt-image-2",
     size: typeof node.size === "string" ? node.size : "",
     count: Math.max(1, Math.floor(Number(node.count || 1))),
@@ -139,6 +156,10 @@ function normalizeNode(node: ImageCanvasNode & Record<string, unknown>): ImageCa
     progressMessage: typeof node.progressMessage === "string" ? node.progressMessage : undefined,
     b64_json: typeof node.b64_json === "string" ? node.b64_json : undefined,
     url: typeof node.url === "string" ? node.url : undefined,
+    imageWidth: normalizePositiveInteger(node.imageWidth),
+    imageHeight: normalizePositiveInteger(node.imageHeight),
+    durationMs: normalizePositiveInteger(node.durationMs),
+    usage: node.usage && typeof node.usage === "object" && !Array.isArray(node.usage) ? { ...(node.usage as Record<string, unknown>) } : undefined,
     revised_prompt: typeof node.revised_prompt === "string" ? node.revised_prompt : undefined,
     error: typeof node.error === "string" ? node.error : undefined,
     favorite: Boolean(node.favorite),

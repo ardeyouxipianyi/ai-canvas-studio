@@ -1,2 +1,2 @@
-"""Protocol converters for OpenAI-compatible endpoints."""
+"""Shared image helpers kept for the internal canvas task engine."""
 

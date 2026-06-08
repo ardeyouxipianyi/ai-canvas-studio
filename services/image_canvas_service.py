@@ -66,10 +66,17 @@ def _normalize_node(raw: object) -> dict[str, object] | None:
         "createdAt": _clean(raw.get("createdAt"), now),
         "updatedAt": _clean(raw.get("updatedAt"), _clean(raw.get("createdAt"), now)),
     }
-    for key in ("prompt", "sourceNodeId", "taskId", "b64_json", "url", "revised_prompt", "error", "progressMessage"):
+    for key in ("prompt", "batchId", "providerId", "providerName", "providerType", "sourceNodeId", "taskId", "b64_json", "url", "revised_prompt", "error", "progressMessage"):
         value = raw.get(key)
         if isinstance(value, str):
             node[key] = value
+    for key in ("imageWidth", "imageHeight", "durationMs"):
+        value = int(_number(raw.get(key), 0))
+        if value > 0:
+            node[key] = value
+    usage = raw.get("usage")
+    if isinstance(usage, dict):
+        node["usage"] = usage
     return node
 
 

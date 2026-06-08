@@ -3,8 +3,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: chatgpt2api-canvas:local
-    container_name: chatgpt2api
+    image: ai-canvas-studio:local
+    container_name: ai-canvas-studio
     restart: unless-stopped
     ports:
       - "3000:80"

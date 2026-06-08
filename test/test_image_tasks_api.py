@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 import api.image_tasks as image_tasks_module
 
 
-AUTH_HEADERS = {"Authorization": "Bearer chatgpt2api"}
+AUTH_HEADERS = {"Authorization": "Bearer ai-canvas-studio"}
 AUTH_IDENTITY = {"id": "admin", "name": "Admin", "role": "admin"}
 
 
@@ -120,6 +120,17 @@ class ImageTasksApiTests(unittest.TestCase):
         self.assertEqual(payload["id"], "task-1")
         self.assertEqual(payload["status"], "success")
         self.assertEqual(len(self.fake_service.generation_calls), 1)
+        self.assertEqual(self.fake_service.generation_calls[0][1]["provider_id"], "")
+
+    def test_create_generation_task_passes_provider_id(self):
+        response = self.client.post(
+            "/api/image-tasks/generations",
+            headers=AUTH_HEADERS,
+            json={"client_task_id": "task-provider", "prompt": "cat", "model": "gpt-image-2", "provider_id": "provider-1"},
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(self.fake_service.generation_calls[0][1]["provider_id"], "provider-1")
 
     def test_create_edit_task_accepts_multiple_images(self):
         response = self.client.post(
@@ -209,6 +220,18 @@ class ImageTasksApiTests(unittest.TestCase):
         payload = response.json()
         self.assertEqual([item["id"] for item in payload["items"]], ["task-1"])
         self.assertEqual(payload["missing_ids"], ["missing"])
+
+    def test_task_events_streams_task_payload_and_done(self):
+        with self.client.stream(
+            "GET",
+            "/api/image-tasks/events?ids=task-1,missing&token=ai-canvas-studio",
+        ) as response:
+            self.assertEqual(response.status_code, 200)
+            body = "".join(response.iter_text())
+
+        self.assertIn("event: tasks", body)
+        self.assertIn("event: done", body)
+        self.assertIn('"missing_ids":["missing"]', body)
 
     def test_cancel_tasks(self):
         response = self.client.post(

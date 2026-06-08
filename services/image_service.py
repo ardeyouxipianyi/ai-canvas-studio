@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import hashlib
+import json
 import re
 import zipfile
 from datetime import datetime
@@ -12,6 +13,7 @@ from fastapi.responses import FileResponse
 from PIL import Image, ImageOps
 
 from services.config import config
+from services.config import DATA_DIR
 from services.image_tags_service import load_tags, remove_tags
 
 THUMBNAIL_SIZE = (320, 320)
@@ -194,6 +196,40 @@ def _image_items(start_date: str = "", end_date: str = "", identity: dict[str, o
     return items
 
 
+def _canvas_image_refs(identity: dict[str, object] | None = None) -> dict[str, dict[str, object]]:
+    path = DATA_DIR / "image_canvas_projects.json"
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    owner_id = _identity_owner_id(identity)
+    is_admin = _identity_is_admin(identity)
+    projects = raw.get("projects") if isinstance(raw, dict) else raw
+    if not isinstance(projects, list):
+        return {}
+    refs: dict[str, dict[str, object]] = {}
+    for project in projects:
+        if not isinstance(project, dict):
+            continue
+        if not is_admin and owner_id and str(project.get("owner_id") or "") != owner_id:
+            continue
+        for node in project.get("nodes") or []:
+            if not isinstance(node, dict) or node.get("type") != "image":
+                continue
+            url = str(node.get("url") or "")
+            if "/images/" not in url:
+                continue
+            rel = url.split("/images/", 1)[1].split("?", 1)[0].split("#", 1)[0].lstrip("/")
+            if rel:
+                refs.setdefault(rel, {
+                    "canvas_project_id": project.get("id"),
+                    "canvas_project_title": project.get("title"),
+                    "canvas_node_id": node.get("id"),
+                    "canvas_node_title": node.get("title"),
+                })
+    return refs
+
+
 def list_images(
     base_url: str,
     start_date: str = "",
@@ -203,12 +239,14 @@ def list_images(
     config.cleanup_old_images()
     cleanup_image_thumbnails()
     all_tags = load_tags()
+    canvas_refs = _canvas_image_refs(identity)
     items = [
         {
             **item,
             "url": f"{base_url.rstrip('/')}/images/{item['path']}",
             "thumbnail_url": thumbnail_url(base_url, str(item["path"])),
             "tags": all_tags.get(str(item["path"]), []),
+            **canvas_refs.get(str(item["path"]), {}),
         }
         for item in _image_items(start_date, end_date, identity)
     ]

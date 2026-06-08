@@ -20,7 +20,8 @@ CONFIG_SEED_FILE = BASE_DIR / "config.seed.json"
 CONFIG_EXAMPLE_FILE = BASE_DIR / "config.example.json"
 VERSION_FILE = BASE_DIR / "VERSION"
 BACKUP_STATE_FILE = DATA_DIR / "backup_state.json"
-DEFAULT_ADMIN_AUTH_KEY = "chatgpt2api"
+DEFAULT_ADMIN_AUTH_KEY = "ai-canvas-studio"
+LEGACY_DEFAULT_ADMIN_AUTH_KEYS = {"chatgpt2api"}
 AUTH_KEY_HASH_FIELD = "auth-key-hash"
 AUTH_KEY_HASH_ALGORITHM = "pbkdf2_sha256"
 AUTH_KEY_HASH_ITERATIONS = 260_000
@@ -39,25 +40,16 @@ CONFIG_FILE = _resolve_runtime_config_file()
 DEFAULT_BACKUP_INCLUDE = {
     "config": True,
     "register": False,
-    "cpa": True,
-    "sub2api": True,
+    "cpa": False,
+    "sub2api": False,
     "logs": True,
     "image_tasks": True,
+    "image_providers": True,
     "image_conversations": True,
     "image_canvas": True,
-    "accounts_snapshot": True,
+    "accounts_snapshot": False,
     "auth_keys_snapshot": True,
     "images": False,
-}
-DEFAULT_CHAT_COMPLETION_CACHE = {
-    "enabled": True,
-    "ttl_seconds": 60,
-    "max_entries": 256,
-    "dedupe_inflight": True,
-    "stream_cache": True,
-    "normalize_messages": True,
-    "drop_adjacent_duplicates": True,
-    "drop_assistant_history": False,
 }
 DEFAULT_REVERSE_PROMPT_INSTRUCTION = (
     "请根据这张图片反推出可用于 AI 画图的中文提示词。"
@@ -124,43 +116,6 @@ def _normalize_backup_state(value: object) -> dict[str, object]:
     }
 
 
-def _normalize_chat_completion_cache_settings(value: object) -> dict[str, object]:
-    source = value if isinstance(value, dict) else {}
-    return {
-        "enabled": _normalize_bool(source.get("enabled"), bool(DEFAULT_CHAT_COMPLETION_CACHE["enabled"])),
-        "ttl_seconds": _normalize_positive_int(
-            source.get("ttl_seconds"),
-            int(DEFAULT_CHAT_COMPLETION_CACHE["ttl_seconds"]),
-            0,
-        ),
-        "max_entries": _normalize_positive_int(
-            source.get("max_entries"),
-            int(DEFAULT_CHAT_COMPLETION_CACHE["max_entries"]),
-            1,
-        ),
-        "dedupe_inflight": _normalize_bool(
-            source.get("dedupe_inflight"),
-            bool(DEFAULT_CHAT_COMPLETION_CACHE["dedupe_inflight"]),
-        ),
-        "stream_cache": _normalize_bool(
-            source.get("stream_cache"),
-            bool(DEFAULT_CHAT_COMPLETION_CACHE["stream_cache"]),
-        ),
-        "normalize_messages": _normalize_bool(
-            source.get("normalize_messages"),
-            bool(DEFAULT_CHAT_COMPLETION_CACHE["normalize_messages"]),
-        ),
-        "drop_adjacent_duplicates": _normalize_bool(
-            source.get("drop_adjacent_duplicates"),
-            bool(DEFAULT_CHAT_COMPLETION_CACHE["drop_adjacent_duplicates"]),
-        ),
-        "drop_assistant_history": _normalize_bool(
-            source.get("drop_assistant_history"),
-            bool(DEFAULT_CHAT_COMPLETION_CACHE["drop_assistant_history"]),
-        ),
-    }
-
-
 @dataclass(frozen=True)
 class LoadedSettings:
     auth_key: str
@@ -208,7 +163,11 @@ def _verify_admin_auth_key_hash(raw_key: str, stored_hash: str) -> bool:
 
 def _auth_key_requires_first_setup(value: object) -> bool:
     auth_key = _normalize_auth_key(value)
-    return not auth_key or hmac.compare_digest(auth_key, DEFAULT_ADMIN_AUTH_KEY)
+    return (
+        not auth_key
+        or hmac.compare_digest(auth_key, DEFAULT_ADMIN_AUTH_KEY)
+        or any(hmac.compare_digest(auth_key, legacy) for legacy in LEGACY_DEFAULT_ADMIN_AUTH_KEYS)
+    )
 
 
 def _normalize_setup_required(raw_config: dict[str, object], auth_key: str | None = None) -> bool:
@@ -571,9 +530,9 @@ class ConfigStore:
         data["admin_auth_key_editable"] = self.admin_auth_key_editable
         data["setup_required"] = self.setup_required
         data["backup"] = self.get_backup_settings()
-        data["chat_completion_cache"] = self.get_chat_completion_cache_settings()
         data.pop("auth-key", None)
         data.pop(AUTH_KEY_HASH_FIELD, None)
+        data.pop("chat_completion_cache", None)
         return data
 
     def get_proxy_settings(self) -> str:
@@ -589,10 +548,7 @@ class ConfigStore:
         next_data.update(updates)
         if "backup" in next_data:
             next_data["backup"] = _normalize_backup_settings(next_data.get("backup"))
-        if "chat_completion_cache" in next_data:
-            next_data["chat_completion_cache"] = _normalize_chat_completion_cache_settings(
-                next_data.get("chat_completion_cache")
-            )
+        next_data.pop("chat_completion_cache", None)
         next_data.pop("backup_state", None)
         self.data = next_data
         self._save()
@@ -645,9 +601,6 @@ class ConfigStore:
 
     def get_backup_settings(self) -> dict[str, object]:
         return _normalize_backup_settings(self.data.get("backup"))
-
-    def get_chat_completion_cache_settings(self) -> dict[str, object]:
-        return _normalize_chat_completion_cache_settings(self.data.get("chat_completion_cache"))
 
     def get_storage_backend(self) -> StorageBackend:
         """获取存储后端实例（单例）"""

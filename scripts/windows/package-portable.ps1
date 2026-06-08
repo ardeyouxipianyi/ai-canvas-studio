@@ -1,5 +1,5 @@
 param(
-    [string]$OutputDir = "dist\chatgpt2api-windows-portable",
+    [string]$OutputDir = "dist\ai-canvas-studio-windows-portable",
     [string]$RuntimeDir = "runtime",
     [switch]$SkipWebBuild,
     [switch]$SkipPythonPackages
@@ -70,7 +70,7 @@ foreach ($item in $items) {
 
 $portableConfigJson = @'
 {
-  "auth-key": "chatgpt2api",
+  "auth-key": "ai-canvas-studio",
   "refresh_account_interval_minute": 60,
   "image_retention_days": 15,
   "image_poll_timeout_secs": 120,

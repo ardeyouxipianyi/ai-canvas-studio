@@ -9,16 +9,10 @@
 3. 双击 `start.bat`
 4. 打开 `http://localhost:3000`，首次启动按页面提示设置管理员密码
 
-Cherry Studio / OpenAI 兼容接口填写：
-
-```text
-http://localhost:3000/v1
-```
-
 ## 绿色包结构
 
 ```text
-chatgpt2api-windows-portable/
+ai-canvas-studio-windows-portable/
 ├─ start.bat
 ├─ stop.bat
 ├─ app/
@@ -57,7 +51,7 @@ powershell -ExecutionPolicy Bypass -File scripts/windows/package-portable.ps1
 生成目录：
 
 ```text
-dist/chatgpt2api-windows-portable/
+dist/ai-canvas-studio-windows-portable/
 ```
 
 把这个目录压缩成 zip 后发给用户即可。

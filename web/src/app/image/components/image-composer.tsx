@@ -12,7 +12,6 @@ type ImageComposerProps = {
   prompt: string;
   imageCount: string;
   imageSize: string;
-  availableQuota: string;
   activeTaskCount: number;
   referenceImages: Array<{ name: string; dataUrl: string }>;
   textareaRef: RefObject<HTMLTextAreaElement | null>;
@@ -26,13 +25,20 @@ type ImageComposerProps = {
   onRemoveReferenceImage: (index: number) => void;
   placeholder?: string;
   submitAriaLabel?: string;
+  providerOptions?: Array<{ id: string; name: string; enabled?: boolean; default_model?: string }>;
+  selectedProviderId?: string;
+  modelValue?: string;
+  modelOptions?: string[];
+  isLoadingModels?: boolean;
+  onProviderChange?: (providerId: string) => void;
+  onModelChange?: (model: string) => void;
+  onFetchModels?: () => void | Promise<void>;
 };
 
 export function ImageComposer({
   prompt,
   imageCount,
   imageSize,
-  availableQuota,
   activeTaskCount,
   referenceImages,
   textareaRef,
@@ -46,6 +52,14 @@ export function ImageComposer({
   onRemoveReferenceImage,
   placeholder,
   submitAriaLabel,
+  providerOptions = [],
+  selectedProviderId = "",
+  modelValue = "",
+  modelOptions = [],
+  isLoadingModels = false,
+  onProviderChange,
+  onModelChange,
+  onFetchModels,
 }: ImageComposerProps) {
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [lightboxIndex, setLightboxIndex] = useState(0);
@@ -68,6 +82,7 @@ export function ImageComposer({
   const activeImageSizeOption = imageSizeOptions.find((option) => option.value === imageSize) || imageSizeOptions[0];
   const imageSizeLabel = activeImageSizeOption.label;
   const imageSizeEstimate = activeImageSizeOption.estimate;
+  const selectedProvider = providerOptions.find((provider) => provider.id === selectedProviderId);
 
   useEffect(() => {
     if (!isSizeMenuOpen) {
@@ -190,10 +205,67 @@ export function ImageComposer({
                   >
                     <ImagePlus className="size-4" />
                   </Button>
-                  <div className="flex h-8 shrink-0 items-center gap-1.5 rounded-full bg-white px-2.5 text-xs font-medium text-stone-600 shadow-sm ring-1 ring-stone-200/80 sm:px-3">
-                    <span className="text-stone-400">额度</span>
-                    <span className="font-semibold text-stone-800">{availableQuota}</span>
-                  </div>
+                  {providerOptions.length > 0 ? (
+                    <div className="flex h-8 shrink-0 items-center gap-1.5 rounded-full bg-white px-2.5 text-xs shadow-sm ring-1 ring-stone-200/80 sm:px-3">
+                      <span className="font-medium text-stone-400">服务</span>
+                      <select
+                        value={selectedProviderId}
+                        onChange={(event) => onProviderChange?.(event.target.value)}
+                        className="h-7 max-w-[150px] border-0 bg-transparent text-xs font-semibold text-stone-800 outline-none"
+                        title={selectedProvider?.name || "选择模型服务"}
+                      >
+                        {providerOptions.map((provider) => (
+                          <option key={provider.id} value={provider.id} disabled={provider.enabled === false}>
+                            {provider.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  ) : (
+                    <div className="flex h-8 shrink-0 items-center rounded-full bg-rose-50 px-2.5 text-xs font-medium text-rose-700 ring-1 ring-rose-100 sm:px-3">
+                      未配置模型服务
+                    </div>
+                  )}
+                  {onModelChange ? (
+                    <div className="flex h-8 shrink-0 items-center gap-1.5 rounded-full bg-white px-2.5 text-xs shadow-sm ring-1 ring-stone-200/80 sm:px-3">
+                      <span className="font-medium text-stone-400">模型</span>
+                      <input
+                        value={modelValue}
+                        onChange={(event) => onModelChange(event.target.value)}
+                        placeholder={selectedProvider?.default_model || "model"}
+                        className="h-7 w-[118px] border-0 bg-transparent px-0 text-xs font-semibold text-stone-800 outline-none"
+                      />
+                      {modelOptions.length > 0 ? (
+                        <select
+                          value={modelOptions.includes(modelValue) ? modelValue : ""}
+                          onChange={(event) => {
+                            if (event.target.value) onModelChange(event.target.value);
+                          }}
+                          className="h-6 max-w-[138px] shrink-0 rounded-full border border-stone-200 bg-stone-50 px-2 text-[11px] font-medium text-stone-700 outline-none transition hover:bg-stone-100"
+                          title="选择已获取的模型"
+                        >
+                          <option value="">选择模型</option>
+                          {modelOptions.map((model) => (
+                            <option key={model} value={model}>
+                              {model}
+                            </option>
+                          ))}
+                        </select>
+                      ) : null}
+                      {onFetchModels ? (
+                        <button
+                          type="button"
+                          className="inline-flex h-6 shrink-0 items-center rounded-full bg-stone-100 px-2 text-[11px] font-medium text-stone-600 transition hover:bg-stone-200 disabled:cursor-not-allowed disabled:opacity-50"
+                          onClick={() => void onFetchModels()}
+                          disabled={isLoadingModels || !selectedProviderId}
+                          title="从当前模型服务获取模型列表"
+                        >
+                          {isLoadingModels ? <LoaderCircle className="mr-1 size-3 animate-spin" /> : null}
+                          获取
+                        </button>
+                      ) : null}
+                    </div>
+                  ) : null}
                   {activeTaskCount > 0 && (
                     <div className="flex h-8 shrink-0 items-center gap-1 rounded-full bg-amber-50 px-2.5 text-xs font-medium text-amber-700 ring-1 ring-amber-100 sm:gap-1.5 sm:px-3">
                       <LoaderCircle className="size-3 animate-spin" />
