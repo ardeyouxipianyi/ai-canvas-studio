@@ -80,7 +80,7 @@ export function TopNav() {
             AI 画布工作台
           </Link>
           <a
-            href="https://github.com/ardeyouxipianyi/chatgpt2api"
+            href="https://github.com/ardeyouxipianyi/ai-canvas-studio"
             target="_blank"
             rel="noreferrer"
             className="inline-flex items-center gap-1.5 py-1 text-sm text-stone-400 transition hover:text-stone-700"
