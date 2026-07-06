@@ -95,6 +95,18 @@ npm install
 npm run dev
 ```
 
+Windows 本地开发也可以直接运行：
+
+```text
+双击 .start-dev.cmd
+```
+
+或在 PowerShell 中运行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .start.ps1
+```
+
 ## 画布工作流
 
 1. 在画布底部输入提示词。

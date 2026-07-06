@@ -16,6 +16,10 @@ edit
 dev-server.log
 backend-server.log
 backend-server.err.log
+*.log
+.dup_script.js
+.fix*.js
+.replace_toolbar.js
 
 docker-compose-local.yml
 
