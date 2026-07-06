@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import base64
 import threading
 import time
 import uuid
@@ -8,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from curl_cffi import requests
+from curl_cffi import CurlMime, requests
 
 from services.config import DATA_DIR, config
 from utils.helper import decode_image_source
@@ -197,6 +198,52 @@ def _normalize_result(data: object) -> dict[str, Any]:
     return result
 
 
+def _content_text(value: object) -> str:
+    if isinstance(value, str):
+        return _clean(value)
+    if isinstance(value, list):
+        chunks: list[str] = []
+        for item in value:
+            if isinstance(item, str):
+                chunks.append(item)
+            elif isinstance(item, dict):
+                text = _clean(item.get("text"))
+                if text:
+                    chunks.append(text)
+        return "\n".join(chunk for chunk in chunks if chunk).strip()
+    return ""
+
+
+def _normalize_chat_result(data: object) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        raise RuntimeError("provider returned invalid JSON")
+    choices = data.get("choices")
+    message = ""
+    if isinstance(choices, list) and choices:
+        first = choices[0]
+        if isinstance(first, dict):
+            raw_message = first.get("message")
+            if isinstance(raw_message, dict):
+                message = _content_text(raw_message.get("content"))
+            if not message:
+                message = _content_text(first.get("text"))
+    if not message:
+        message = _clean(data.get("message"))
+    result: dict[str, Any] = {
+        "created": data.get("created") or int(time.time()),
+        "data": [],
+        "message": message,
+    }
+    if isinstance(data.get("usage"), dict):
+        result["usage"] = data.get("usage")
+    return result
+
+
+def _image_to_data_url(image_data: bytes, mime_type: str) -> str:
+    mime = _clean(mime_type, "image/png") or "image/png"
+    return f"data:{mime};base64,{base64.b64encode(image_data).decode('ascii')}"
+
+
 @dataclass
 class ProviderRequest:
     provider_id: str
@@ -272,6 +319,24 @@ class ImageProviderService:
                 raise ValueError("api_key is required")
             if _looks_like_url(provider["api_key"]):
                 raise ValueError("api_key must be an API key, not a URL.")
+            if existing:
+                reset_error_fields = any(
+                    provider.get(key) != existing.get(key)
+                    for key in (
+                        "base_url",
+                        "api_key",
+                        "default_model",
+                        "default_reverse_prompt_model",
+                        "default_size",
+                        "default_quality",
+                        "timeout_secs",
+                        "capabilities",
+                    )
+                )
+                if reset_error_fields:
+                    provider["last_error_at"] = None
+                    provider["last_error"] = ""
+                    provider["error_count"] = 0
             if existing_index >= 0:
                 self._providers[existing_index] = provider
             else:
@@ -366,6 +431,25 @@ class ImageProviderService:
 
     def test_provider(self, provider_id: str, *, model: str = "") -> dict[str, Any]:
         provider = self.get_provider(provider_id, require_enabled=False)
+        return self._test_provider_config(provider, model=model)
+
+    def test_provider_for_config(self, data: dict[str, Any]) -> dict[str, Any]:
+        existing = None
+        provider_id = _clean(data.get("id"))
+        if provider_id:
+            with self._lock:
+                existing = next((item for item in self._providers if item.get("id") == provider_id), None)
+        provider = _normalize_provider(data, existing=existing)
+        if not provider["base_url"]:
+            raise ValueError("base_url is required")
+        if not provider["api_key"]:
+            raise ValueError("api_key is required")
+        if _looks_like_url(provider["api_key"]):
+            raise ValueError("api_key must be an API key, not a URL.")
+        selected_model = _clean(data.get("model"), provider.get("default_model"))
+        return self._test_provider_config(provider, model=selected_model)
+
+    def _test_provider_config(self, provider: dict[str, Any], *, model: str = "") -> dict[str, Any]:
         started = time.time()
         url = f"{provider['base_url']}/models"
         response = requests.get(url, headers=self._headers(provider), timeout=provider["timeout_secs"])
@@ -405,6 +489,27 @@ class ImageProviderService:
             stored["latency_ms"] = latency_ms
             self._save()
         return {"items": models}
+
+    def list_models_for_config(self, data: dict[str, Any]) -> dict[str, Any]:
+        existing = None
+        provider_id = _clean(data.get("id"))
+        if provider_id:
+            with self._lock:
+                existing = next((item for item in self._providers if item.get("id") == provider_id), None)
+        provider = _normalize_provider(data, existing=existing)
+        if not provider["base_url"]:
+            raise ValueError("base_url is required")
+        if not provider["api_key"]:
+            raise ValueError("api_key is required")
+        if _looks_like_url(provider["api_key"]):
+            raise ValueError("api_key must be an API key, not a URL.")
+        started = time.time()
+        response = requests.get(f"{provider['base_url']}/models", headers=self._headers(provider), timeout=provider["timeout_secs"])
+        latency_ms = int((time.time() - started) * 1000)
+        if response.status_code >= 400:
+            raise RuntimeError(_extract_response_error(response))
+        models = _models_from_response(response.json())
+        return {"items": models, "latency_ms": latency_ms}
 
     def record_provider_result(self, provider_id: str, *, ok: bool, latency_ms: int = 0, error: str = "") -> None:
         provider_id = _clean(provider_id)
@@ -474,20 +579,23 @@ class ImageProviderService:
         provider = self.get_provider(request.provider_id)
         if not provider["capabilities"].get("reverse_prompt"):
             raise RuntimeError("Provider does not support reverse prompt.")
-        if not request.model:
-            request = ProviderRequest(
-                provider_id=request.provider_id,
-                prompt=request.prompt,
-                model=_clean(provider.get("default_reverse_prompt_model"), provider["default_model"]),
-                size=request.size,
-                quality=request.quality,
-                n=request.n,
-                response_format=request.response_format,
-                images=request.images,
-                message_as_error=request.message_as_error,
-                owner_id=request.owner_id,
+        if not request.images:
+            raise RuntimeError("image file, data URL, base64 image, or http(s) image URL is required")
+        content: list[dict[str, Any]] = [{"type": "text", "text": request.prompt}]
+        for image_data, _filename, mime_type in request.images:
+            content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": _image_to_data_url(image_data, mime_type),
+                    },
+                }
             )
-        return self.edit(request)
+        body = {
+            "model": request.model or _clean(provider.get("default_reverse_prompt_model"), provider["default_model"]),
+            "messages": [{"role": "user", "content": content}],
+        }
+        return self._post_chat(provider, "/chat/completions", body)
 
     def _headers(self, provider: dict[str, Any]) -> dict[str, str]:
         headers = {"Accept": "application/json"}
@@ -507,14 +615,37 @@ class ImageProviderService:
             raise _provider_http_error(response, path)
         return _normalize_result(response.json())
 
-    def _post_multipart(self, provider: dict[str, Any], path: str, data: dict[str, str], files: list[tuple[str, tuple[str, bytes, str]]]) -> dict[str, Any]:
+    def _post_chat(self, provider: dict[str, Any], path: str, body: dict[str, Any]) -> dict[str, Any]:
         response = requests.post(
             f"{provider['base_url']}{path}",
-            data=data,
-            files=files,
-            headers=self._headers(provider),
+            json=body,
+            headers={**self._headers(provider), "Content-Type": "application/json"},
             timeout=provider["timeout_secs"],
         )
+        if response.status_code >= 400:
+            raise _provider_http_error(response, path)
+        return _normalize_chat_result(response.json())
+
+    def _post_multipart(self, provider: dict[str, Any], path: str, data: dict[str, str], files: list[tuple[str, tuple[str, bytes, str]]]) -> dict[str, Any]:
+        multipart = CurlMime()
+        for key, value in data.items():
+            multipart.addpart(key, data=value.encode("utf-8"))
+        for field_name, (filename, content, mime_type) in files:
+            multipart.addpart(
+                field_name,
+                filename=filename,
+                content_type=mime_type,
+                data=content,
+            )
+        try:
+            response = requests.post(
+                f"{provider['base_url']}{path}",
+                multipart=multipart,
+                headers=self._headers(provider),
+                timeout=provider["timeout_secs"],
+            )
+        finally:
+            multipart.close()
         if response.status_code >= 400:
             raise _provider_http_error(response, path)
         return _normalize_result(response.json())

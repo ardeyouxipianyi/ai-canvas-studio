@@ -483,6 +483,13 @@ export async function testImageProvider(providerId: string, model = "") {
   });
 }
 
+export async function testImageProviderForConfig(provider: ImageProviderInput & { model?: string }) {
+  return httpRequest<{ result: ProxyTestResult }>("/api/image-providers/test", {
+    method: "POST",
+    body: provider,
+  });
+}
+
 export async function revealImageProviderApiKey(providerId: string) {
   return httpRequest<{ api_key: string }>(`/api/image-providers/${encodeURIComponent(providerId)}/api-key`);
 }
@@ -491,8 +498,18 @@ export async function fetchImageProviderModels(providerId: string) {
   return httpRequest<{ items: string[] }>(`/api/image-providers/${encodeURIComponent(providerId)}/models`);
 }
 
+export async function fetchImageProviderModelsForConfig(provider: ImageProviderInput) {
+  return httpRequest<{ items: string[]; latency_ms?: number }>("/api/image-providers/models", {
+    method: "POST",
+    body: provider,
+  });
+}
+
 export async function fetchSettingsConfig() {
-  return httpRequest<{ config: SettingsConfig }>("/api/settings");
+  return httpRequest<{ config: SettingsConfig }>("/api/settings", {
+    redirectOnUnauthorized: false,
+    timeoutMs: 10000,
+  });
 }
 
 export async function updateSettingsConfig(settings: SettingsConfig) {

@@ -162,7 +162,7 @@ class ImageProviderServiceTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "reverse prompt"):
                 service.reverse_prompt(request)
 
-    def test_reverse_prompt_posts_to_image_edits_when_enabled(self):
+    def test_reverse_prompt_posts_to_chat_completions_when_enabled(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             fake_config = FakeConfig()
             with mock.patch.object(provider_module, "config", fake_config):
@@ -171,29 +171,33 @@ class ImageProviderServiceTests(unittest.TestCase):
                     {
                         "base_url": "https://api.example.com/v1",
                         "api_key": "sk-secret",
+                        "default_reverse_prompt_model": "gpt-5-3-mini",
                         "capabilities": {"generate": True, "edit": True, "reverse_prompt": True},
                     }
                 )
 
             captured = {}
 
-            def fake_post(url, data=None, files=None, **_kwargs):
-                captured.update({"url": url, "data": data, "files": files})
-                return FakeResponse(payload={"data": [], "message": "cinematic prompt"})
+            def fake_post(url, json=None, headers=None, **_kwargs):
+                captured.update({"url": url, "json": json, "headers": headers})
+                return FakeResponse(payload={"choices": [{"message": {"content": "cinematic prompt"}}], "usage": {"total_tokens": 8}})
 
             request = ProviderRequest(
                 provider_id=item["id"],
                 prompt="describe",
-                model="gpt-image-1",
+                model="gpt-5-3-mini",
                 images=[(b"image", "input.png", "image/png")],
                 message_as_error=False,
             )
             with mock.patch.object(provider_module.requests, "post", fake_post):
                 result = service.reverse_prompt(request)
 
-        self.assertEqual(captured["url"], "https://api.example.com/v1/images/edits")
-        self.assertEqual(captured["data"]["prompt"], "describe")
+        self.assertEqual(captured["url"], "https://api.example.com/v1/chat/completions")
+        self.assertEqual(captured["json"]["model"], "gpt-5-3-mini")
+        self.assertEqual(captured["json"]["messages"][0]["content"][0]["text"], "describe")
+        self.assertTrue(captured["json"]["messages"][0]["content"][1]["image_url"]["url"].startswith("data:image/png;base64,"))
         self.assertEqual(result["message"], "cinematic prompt")
+        self.assertEqual(result["usage"]["total_tokens"], 8)
 
     def test_test_provider_returns_warnings(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

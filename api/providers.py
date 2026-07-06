@@ -69,6 +69,14 @@ def create_router() -> APIRouter:
         except Exception as exc:
             return {"result": {"ok": False, "status": 0, "latency_ms": 0, "error": str(exc)}}
 
+    @router.post("/api/image-providers/test")
+    async def test_image_provider_for_config(body: ProviderRequest, authorization: str | None = Header(default=None)):
+        require_admin(authorization)
+        try:
+            return {"result": await run_in_threadpool(image_provider_service.test_provider_for_config, body.model_dump(mode="python"))}
+        except Exception as exc:
+            return {"result": {"ok": False, "status": 0, "latency_ms": 0, "error": str(exc)}}
+
     @router.get("/api/image-providers/{provider_id}/api-key")
     async def reveal_image_provider_api_key(provider_id: str, authorization: str | None = Header(default=None)):
         require_admin(authorization)
@@ -76,6 +84,14 @@ def create_router() -> APIRouter:
             return {"api_key": await run_in_threadpool(image_provider_service.get_provider_api_key, provider_id)}
         except ValueError as exc:
             raise HTTPException(status_code=404, detail={"error": str(exc)}) from exc
+
+    @router.post("/api/image-providers/models")
+    async def list_image_provider_models_for_config(body: ProviderRequest, authorization: str | None = Header(default=None)):
+        require_admin(authorization)
+        try:
+            return await run_in_threadpool(image_provider_service.list_models_for_config, body.model_dump(mode="python"))
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
 
     @router.get("/api/image-providers/{provider_id}/models")
     async def list_image_provider_models(provider_id: str, authorization: str | None = Header(default=None)):

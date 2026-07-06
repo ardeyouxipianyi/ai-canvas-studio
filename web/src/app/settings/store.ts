@@ -110,6 +110,7 @@ function normalizeConfig(config: SettingsConfig): SettingsConfig {
 type SettingsStore = {
   config: SettingsConfig | null;
   isLoadingConfig: boolean;
+  configLoadError: string;
   isSavingConfig: boolean;
   backups: BackupItem[];
   backupState: BackupState | null;
@@ -153,6 +154,7 @@ type SettingsStore = {
 export const useSettingsStore = create<SettingsStore>((set, get) => ({
   config: null,
   isLoadingConfig: true,
+  configLoadError: "",
   isSavingConfig: false,
   backups: [],
   backupState: null,
@@ -178,15 +180,18 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   },
 
   loadConfig: async () => {
-    set({ isLoadingConfig: true });
+    set({ isLoadingConfig: true, configLoadError: "" });
     try {
       const data = await fetchSettingsConfig();
       const normalized = normalizeConfig(data.config);
       set({
         config: normalized,
+        configLoadError: "",
       });
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "加载系统配置失败");
+      const message = error instanceof Error ? error.message : "加载系统配置失败";
+      set({ configLoadError: message });
+      toast.error(message);
     } finally {
       set({ isLoadingConfig: false });
     }

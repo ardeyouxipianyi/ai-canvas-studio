@@ -1,6 +1,6 @@
 "use client";
 
-import { LoaderCircle, PlugZap, Save } from "lucide-react";
+import { LoaderCircle, PlugZap, RefreshCcw, Save } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 
@@ -19,7 +19,9 @@ export function ConfigCard() {
   const logLevelOptions = ["debug", "info", "warning", "error"];
   const config = useSettingsStore((state) => state.config);
   const isLoadingConfig = useSettingsStore((state) => state.isLoadingConfig);
+  const configLoadError = useSettingsStore((state) => state.configLoadError);
   const isSavingConfig = useSettingsStore((state) => state.isSavingConfig);
+  const loadConfig = useSettingsStore((state) => state.loadConfig);
   const setImageRetentionDays = useSettingsStore((state) => state.setImageRetentionDays);
   const setImagePollTimeoutSecs = useSettingsStore((state) => state.setImagePollTimeoutSecs);
   const setImageUnacceptedTaskTimeoutSecs = useSettingsStore((state) => state.setImageUnacceptedTaskTimeoutSecs);
@@ -67,10 +69,28 @@ export function ConfigCard() {
     );
   }
 
+  if (!config) {
+    return (
+      <Card className="rounded-2xl border-white/80 bg-white/90 shadow-sm">
+        <CardContent className="flex items-center justify-between gap-4 p-6">
+          <div className="min-w-0">
+            <h2 className="text-lg font-semibold tracking-tight">基础参数加载失败</h2>
+            <p className="mt-1 break-words text-sm text-stone-500">
+              {configLoadError || "暂时无法读取系统配置，请检查后端服务或重新登录。"}
+            </p>
+          </div>
+          <Button type="button" variant="outline" className="h-9 rounded-xl border-stone-200 bg-white px-4 text-stone-700" onClick={() => void loadConfig()}>
+            <RefreshCcw className="size-4" />
+            重试
+          </Button>
+        </CardContent>
+      </Card>
+    );
+  }
+
   return (
     <Card className="rounded-2xl border-white/80 bg-white/90 shadow-sm">
       <CardContent className="space-y-4 p-6">
-        <div className="rounded-xl border border-stone-200 bg-stone-50 px-4 py-3 text-sm leading-6 text-stone-600">管理员登录密钥继续从部署配置读取，不再在此页面展示；如需分发给其他人，请在下方创建普通用户密钥。</div>
         <div className="grid gap-4 md:grid-cols-2">
           <div className="space-y-2">
             <label className="text-sm text-stone-700">全局代理</label>

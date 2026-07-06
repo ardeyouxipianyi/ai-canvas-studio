@@ -115,6 +115,27 @@ function normalizePositiveInteger(value: unknown) {
   const numberValue = normalizeNumber(value, 0);
   return numberValue > 0 ? Math.round(numberValue) : undefined;
 }
+function getAdaptiveImageNodeDimensions(
+  imageWidth: unknown,
+  imageHeight: unknown,
+  fallbackWidth: number,
+  fallbackHeight: number,
+): { width: number; height: number } {
+  const width = normalizePositiveInteger(imageWidth);
+  const height = normalizePositiveInteger(imageHeight);
+  if (!width || !height) {
+    return { width: fallbackWidth, height: fallbackHeight };
+  }
+
+  const ratio = width / height;
+  const normalizedWidth = Math.round(Math.sqrt(Math.max(ratio, 0.01)) * 300);
+  const nodeWidth = Math.min(360, Math.max(240, normalizedWidth));
+  const mediaWidth = Math.max(160, nodeWidth - 24);
+  const mediaHeight = Math.max(120, Math.round(mediaWidth / ratio));
+  const nodeHeight = 44 + 12 + mediaHeight + 12 + 20 + 12;
+
+  return { width: nodeWidth, height: nodeHeight };
+}
 
 function normalizeNode(node: ImageCanvasNode & Record<string, unknown>): ImageCanvasNode {
   const now = new Date().toISOString();
@@ -138,8 +159,17 @@ function normalizeNode(node: ImageCanvasNode & Record<string, unknown>): ImageCa
     type,
     x: normalizeNumber(node.x, 0),
     y: normalizeNumber(node.y, 0),
-    width: normalizeNumber(node.width, type === "image" ? 300 : 320),
-    height: normalizeNumber(node.height, type === "image" ? 260 : 220),
+    ...(type === "image"
+      ? getAdaptiveImageNodeDimensions(
+          node.imageWidth,
+          node.imageHeight,
+          normalizeNumber(node.width, 300),
+          normalizeNumber(node.height, 320),
+        )
+      : {
+          width: normalizeNumber(node.width, 320),
+          height: normalizeNumber(node.height, 220),
+        }),
     title: String(node.title || (type === "edit" ? "编辑节点" : type === "image" ? "图片结果" : "提示词节点")),
     prompt: typeof node.prompt === "string" ? node.prompt : undefined,
     batchId: typeof node.batchId === "string" ? node.batchId : undefined,
