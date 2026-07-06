@@ -1,7 +1,7 @@
 ﻿"use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { BoxSelect, Columns2, Copy, Download, ImagePlus, LoaderCircle, LocateFixed, Maximize2, MoreHorizontal, PanelLeft, PanelRight, Pencil, Plus, RefreshCcw, Save, ScissorsLineDashed, Search, Settings, Sparkles, Star, Trash2, Workflow, X, ZoomIn, ZoomOut } from "lucide-react";
+import { AlignHorizontalJustifyCenter, AlignVerticalJustifyCenter, BoxSelect, Columns2, Copy, Download, ImagePlus, LoaderCircle, LocateFixed, Maximize2, MoreHorizontal, PanelLeft, PanelRight, Pencil, Plus, Redo2, RefreshCcw, Save, ScissorsLineDashed, Search, Settings, Sparkles, Star, Trash2, Undo2, Workflow, X, ZoomIn, ZoomOut } from "lucide-react";
 import { toast } from "sonner";
 
 import { ImageComposer } from "@/app/image/components/image-composer";
@@ -13,6 +13,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { DEFAULT_REVERSE_PROMPT_INSTRUCTION, cancelImageTasks, createImageEditTaskFromSource, createImageEditTaskFromSources, createImageGenerationTask, createImageTaskEventSource, createReversePromptTask, fetchImageProviderModels, fetchImageProviders, fetchImageTasks, fetchReversePromptInstruction, updateReversePromptInstruction, type ImageProvider, type ImageTask } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { useAuthGuard } from "@/lib/use-auth-guard";
+import { CANVAS_HISTORY_LIMIT, alignCanvasNodes, cloneCanvasProject, getAdaptiveImageNodeDimensions, getNodeRenderHeight, getNodesInSelection, nodeToRect, rectsOverlap, selectionBoxFromPoints, type CanvasRect, type CanvasSelectionBox } from "./canvas-core";
 import {
   createBlankImageCanvasProject,
   createImageCanvasId,
@@ -47,6 +48,8 @@ const edgePalette = [
   { stroke: "#4f46e5", glow: "rgba(79,70,229,0.13)" },
 ];
 
+type PersistProjectOptions = { history?: boolean; historySource?: ImageCanvasProject | null };
+
 type DragState =
   | {
       type: "pan";
@@ -62,6 +65,14 @@ type DragState =
       baseX: number;
       baseY: number;
       zoom: number;
+      baseProject: ImageCanvasProject;
+    }
+  | {
+      type: "select";
+      startX: number;
+      startY: number;
+      currentX: number;
+      currentY: number;
     };
 
 function clamp(value: number, min: number, max: number) {
@@ -70,31 +81,6 @@ function clamp(value: number, min: number, max: number) {
 
 function clampCount(value: string) {
   return String(Math.min(100, Math.max(1, Math.floor(Number(value) || 1))));
-}
-function getAdaptiveImageNodeDimensions(node: Pick<ImageCanvasNode, "type" | "width" | "height" | "imageWidth" | "imageHeight">) {
-  if (node.type !== "image") {
-    return { width: node.width, height: node.height, mediaHeight: 0 };
-  }
-
-  const imageWidth = Number(node.imageWidth || 0);
-  const imageHeight = Number(node.imageHeight || 0);
-  if (!Number.isFinite(imageWidth) || !Number.isFinite(imageHeight) || imageWidth <= 0 || imageHeight <= 0) {
-    return { width: node.width, height: node.height, mediaHeight: 188 };
-  }
-
-  const ratio = imageWidth / imageHeight;
-  const normalizedWidth = Math.round(Math.sqrt(Math.max(ratio, 0.01)) * 300);
-  const width = clamp(normalizedWidth, 240, 360);
-  const mediaWidth = Math.max(160, width - 24);
-  const mediaHeight = Math.max(120, Math.round(mediaWidth / ratio));
-  const height = 44 + 12 + mediaHeight + 12 + 20 + 12;
-
-  return { width, height, mediaHeight };
-}
-
-function getNodeRenderHeight(node: Pick<ImageCanvasNode, "type" | "height" | "width" | "imageWidth" | "imageHeight">) {
-  if (node.type !== "image") return node.height;
-  return getAdaptiveImageNodeDimensions(node).height;
 }
 
 function getNodeForEdgePath(node: ImageCanvasNode): ImageCanvasNode {
@@ -583,27 +569,8 @@ function getCanvasBounds(nodes: ImageCanvasNode[]) {
   return { minX, minY, maxX, maxY, width: maxX - minX, height: maxY - minY };
 }
 
-type CanvasRect = { x: number; y: number; width: number; height: number };
 type CanvasPlacement = { x: number; y: number };
 type ReversePromptDestination = "panel" | "composer";
-
-function rectsOverlap(rectA: CanvasRect, rectB: CanvasRect, gap = 36) {
-  return !(
-    rectA.x + rectA.width + gap <= rectB.x ||
-    rectB.x + rectB.width + gap <= rectA.x ||
-    rectA.y + rectA.height + gap <= rectB.y ||
-    rectB.y + rectB.height + gap <= rectA.y
-  );
-}
-
-function nodeToRect(node: ImageCanvasNode): CanvasRect {
-  return {
-    x: node.x,
-    y: node.y,
-    width: node.width,
-    height: getNodeRenderHeight(node),
-  };
-}
 
 function expandRect(rect: CanvasRect, padding: number): CanvasRect {
   return {
@@ -1019,6 +986,8 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
   const localProjectFrameRef = useRef<number | null>(null);
   const pendingLocalProjectRef = useRef<ImageCanvasProject | null>(null);
   const isCanvasInteractingRef = useRef(false);
+  const historyPastRef = useRef<Record<string, ImageCanvasProject[]>>({});
+  const historyFutureRef = useRef<Record<string, ImageCanvasProject[]>>({});
   const [projects, setProjects] = useState<ImageCanvasProject[]>([]);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -1055,6 +1024,8 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
   const [compareNodeIds, setCompareNodeIds] = useState<string[]>([]);
   const [isCanvasInteracting, setIsCanvasInteracting] = useState(false);
   const [canvasViewportSize, setCanvasViewportSize] = useState({ width: 1280, height: 720 });
+  const [selectionBox, setSelectionBox] = useState<CanvasSelectionBox | null>(null);
+  const [historyRevision, setHistoryRevision] = useState(0);
 
   const activeProject = useMemo(() => findProject(projects, activeProjectId), [projects, activeProjectId]);
   const activeProjectStorageKey = `${ACTIVE_PROJECT_KEY}:${ownerKey || "default"}`;
@@ -1109,6 +1080,8 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
         .filter((node): node is ImageCanvasNode => Boolean(node && node.type === "image" && node.status === "success" && getImageNodeSrc(node))),
     [activeProject, compareNodeIds],
   );
+  const canUndo = useMemo(() => Boolean(activeProjectId && (historyPastRef.current[activeProjectId]?.length || 0) > 0), [activeProjectId, historyRevision]);
+  const canRedo = useMemo(() => Boolean(activeProjectId && (historyFutureRef.current[activeProjectId]?.length || 0) > 0), [activeProjectId, historyRevision]);
 
   useEffect(() => {
     activeProjectRef.current = activeProject;
@@ -1293,6 +1266,25 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
     setProjects((current) => [project, ...current.filter((item) => item.id !== project.id)]);
   }, []);
 
+  const pushHistorySnapshot = useCallback((project: ImageCanvasProject | null | undefined) => {
+    if (!project) return;
+    const snapshot = cloneCanvasProject(project);
+    const past = historyPastRef.current[project.id] || [];
+    const last = past[past.length - 1];
+    if (last && JSON.stringify({ nodes: last.nodes, edges: last.edges, title: last.title }) === JSON.stringify({ nodes: snapshot.nodes, edges: snapshot.edges, title: snapshot.title })) {
+      return;
+    }
+    historyPastRef.current = {
+      ...historyPastRef.current,
+      [project.id]: [...past, snapshot].slice(-CANVAS_HISTORY_LIMIT),
+    };
+    historyFutureRef.current = {
+      ...historyFutureRef.current,
+      [project.id]: [],
+    };
+    setHistoryRevision((value) => value + 1);
+  }, []);
+
   const scheduleLocalProject = useCallback((project: ImageCanvasProject) => {
     activeProjectRef.current = project;
     pendingLocalProjectRef.current = project;
@@ -1321,14 +1313,60 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
     }, idleDelay);
   }, []);
 
-  const persistProject = useCallback(async (project: ImageCanvasProject) => {
+  const persistProject = useCallback(async (project: ImageCanvasProject, options: PersistProjectOptions = {}) => {
+    if (options.history) {
+      pushHistorySnapshot(options.historySource ?? activeProjectRef.current);
+    }
     const nextProject = { ...project, updatedAt: new Date().toISOString() };
     applyLocalProject(nextProject);
     setSaveState("saving");
     await saveImageCanvasProject(nextProject);
     setSaveState("saved");
     return nextProject;
-  }, [applyLocalProject]);
+  }, [applyLocalProject, pushHistorySnapshot]);
+
+  const restoreProjectFromHistory = useCallback(
+    async (project: ImageCanvasProject) => {
+      const nextProject = { ...cloneCanvasProject(project), updatedAt: new Date().toISOString() };
+      applyLocalProject(nextProject);
+      setSelectedNodeId(null);
+      setSelectedGroupIds([]);
+      setSaveState("saving");
+      await saveImageCanvasProject(nextProject);
+      setSaveState("saved");
+    },
+    [applyLocalProject],
+  );
+
+  const undoCanvasChange = useCallback(async () => {
+    const project = activeProjectRef.current;
+    if (!project) return;
+    const past = historyPastRef.current[project.id] || [];
+    const previous = past[past.length - 1];
+    if (!previous) return;
+    historyPastRef.current = { ...historyPastRef.current, [project.id]: past.slice(0, -1) };
+    historyFutureRef.current = {
+      ...historyFutureRef.current,
+      [project.id]: [...(historyFutureRef.current[project.id] || []), cloneCanvasProject(project)].slice(-CANVAS_HISTORY_LIMIT),
+    };
+    setHistoryRevision((value) => value + 1);
+    await restoreProjectFromHistory(previous);
+  }, [restoreProjectFromHistory]);
+
+  const redoCanvasChange = useCallback(async () => {
+    const project = activeProjectRef.current;
+    if (!project) return;
+    const future = historyFutureRef.current[project.id] || [];
+    const next = future[future.length - 1];
+    if (!next) return;
+    historyFutureRef.current = { ...historyFutureRef.current, [project.id]: future.slice(0, -1) };
+    historyPastRef.current = {
+      ...historyPastRef.current,
+      [project.id]: [...(historyPastRef.current[project.id] || []), cloneCanvasProject(project)].slice(-CANVAS_HISTORY_LIMIT),
+    };
+    setHistoryRevision((value) => value + 1);
+    await restoreProjectFromHistory(next);
+  }, [restoreProjectFromHistory]);
 
   const persistViewportLater = useCallback((delay = 260) => {
     if (viewportPersistTimeoutRef.current !== null) {
@@ -1356,10 +1394,10 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
   }, []);
 
   const updateActiveProject = useCallback(
-    async (updater: (project: ImageCanvasProject) => ImageCanvasProject) => {
+    async (updater: (project: ImageCanvasProject) => ImageCanvasProject, options: PersistProjectOptions = {}) => {
       const project = activeProjectRef.current;
       if (!project) return null;
-      return persistProject(updater(project));
+      return persistProject(updater(project), { ...options, historySource: options.historySource ?? project });
     },
     [persistProject],
   );
@@ -1487,8 +1525,8 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
       const project = activeProjectRef.current;
       const viewport = project?.viewport ?? { x: 80, y: 64, zoom: 1 };
       const rect = canvasRef.current?.getBoundingClientRect();
-      const x = clientX && rect ? clientX - rect.left : (rect?.width || 1200) / 2;
-      const y = clientY && rect ? clientY - rect.top : (rect?.height || 700) / 2;
+      const x = typeof clientX === "number" && rect ? clientX - rect.left : (rect?.width || 1200) / 2;
+      const y = typeof clientY === "number" && rect ? clientY - rect.top : (rect?.height || 700) / 2;
       return {
         x: (x - viewport.x) / viewport.zoom,
         y: (y - viewport.y) / viewport.zoom,
@@ -1589,7 +1627,7 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
       await persistProject({
         ...project,
         nodes: [...project.nodes, ...uploadedNodes],
-      });
+      }, { history: true, historySource: project });
       setSelectedNodeId(uploadedNodes[0]?.id ?? null);
       setReferenceImages([]);
       if (composerFileInputRef.current) {
@@ -1936,7 +1974,7 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
       title: nextTitle,
       nodes: [...project.nodes, promptNode, ...imageNodes],
       edges: [...project.edges, ...edges],
-    });
+    }, { history: true, historySource: project });
     setSelectedNodeId(promptNodeId);
     clearComposerInputs();
     toast.success("已把提示词和结果节点放到画布");
@@ -2079,7 +2117,7 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
         ...visualSourceNodes.map((node) => ({ id: createImageCanvasId(), from: node.id, to: editNodeId })),
         ...resultNodes.map((node) => ({ id: createImageCanvasId(), from: editNodeId, to: node.id })),
       ],
-    });
+    }, { history: true, historySource: project });
     setSelectedNodeId(resultNodes[0]?.id ?? editNodeId);
     clearComposerInputs();
     toast.success(count > 1 ? `已创建 ${count} 张编辑分支` : "已创建编辑分支");
@@ -2196,7 +2234,7 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
         ...project.edges,
         ...resultNodes.map((node) => ({ id: createImageCanvasId(), from: copiedPromptNodeId, to: node.id })),
       ],
-    });
+    }, { history: true, historySource: project });
     setSelectedNodeId(resultNodes[0]?.id ?? copiedPromptNodeId);
     clearComposerInputs();
     toast.success(count > 1 ? `已复制提示词节点并生成 ${count} 张新结果` : "已复制提示词节点并生成新结果");
@@ -2246,7 +2284,7 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
       (placement) => generationBranchRects(placement, count),
     );
     const duplicatedNodeId = createImageCanvasId();
-    const duplicatedNode = {
+    const duplicatedNode: ImageCanvasNode = {
       ...selectedPromptNode,
       id: duplicatedNodeId,
       x: duplicatedPlacement.x,
@@ -2264,7 +2302,7 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
     await persistProject({
       ...project,
       nodes: [...project.nodes, duplicatedNode],
-    });
+    }, { history: true, historySource: project });
     setSelectedNodeId(duplicatedNodeId);
     toast.success("已复制提示词节点");
   }, [persistProject, selectedPromptNode]);
@@ -2399,7 +2437,7 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
         ...uploadedReferenceNodes.map((node) => ({ id: createImageCanvasId(), from: node.id, to: copiedEditNodeId })),
         ...resultNodes.map((node) => ({ id: createImageCanvasId(), from: copiedEditNodeId, to: node.id })),
       ],
-    });
+    }, { history: true, historySource: project });
     setSelectedNodeId(resultNodes[0]?.id ?? copiedEditNodeId);
     clearComposerInputs();
     toast.success(count > 1 ? `已复制编辑节点并生成 ${count} 张新结果` : "已复制编辑节点并生成新结果");
@@ -2452,7 +2490,7 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
       (placement) => editBranchRects(placement, count, referenceImages.length),
     );
     const duplicatedNodeId = createImageCanvasId();
-    const duplicatedNode = {
+    const duplicatedNode: ImageCanvasNode = {
       ...selectedEditNode,
       id: duplicatedNodeId,
       x: duplicatedPlacement.x,
@@ -2470,7 +2508,7 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
     await persistProject({
       ...project,
       nodes: [...project.nodes, duplicatedNode],
-    });
+    }, { history: true, historySource: project });
     setSelectedNodeId(duplicatedNodeId);
     toast.success("已复制编辑节点");
   }, [persistProject, referenceImages.length, selectedEditNode]);
@@ -2622,7 +2660,7 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
       ...project,
       nodes: project.nodes.filter((item) => item.id !== nodeId),
       edges: project.edges.filter((edge) => edge.from !== nodeId && edge.to !== nodeId),
-    }));
+    }), { history: true });
     setSelectedNodeId((current) => (current === nodeId ? null : current));
     setCompareNodeIds((current) => current.filter((id) => id !== nodeId));
     setSelectedGroupIds((current) => current.filter((id) => id !== nodeId));
@@ -2640,12 +2678,24 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
       ...project,
       nodes: project.nodes.filter((item) => !idSet.has(item.id)),
       edges: project.edges.filter((edge) => !idSet.has(edge.from) && !idSet.has(edge.to)),
-    }));
+    }), { history: true });
     setSelectedNodeId((current) => (current && idSet.has(current) ? null : current));
     setCompareNodeIds((current) => current.filter((id) => !idSet.has(id)));
     setSelectedGroupIds([]);
     setDeleteGroupDialogOpen(false);
   }, [updateActiveProject]);
+
+  const alignSelectedNodes = useCallback(
+    async (axis: "x" | "y") => {
+      if (selectedGroupIds.length < 2) return;
+      await updateActiveProject((project) => ({
+        ...project,
+        nodes: alignCanvasNodes(project.nodes, selectedGroupIds, axis),
+      }), { history: true });
+      toast.success(axis === "x" ? "已垂直对齐选中节点" : "已水平对齐选中节点");
+    },
+    [selectedGroupIds, updateActiveProject],
+  );
 
   const selectRelatedNodeGroup = useCallback((node: ImageCanvasNode) => {
     const project = activeProjectRef.current;
@@ -2680,7 +2730,7 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
         edges: sourceNodeExists && node.sourceNodeId
           ? [...project.edges, { id: createImageCanvasId(), from: node.sourceNodeId, to: copiedNodeId }]
           : project.edges,
-      });
+      }, { history: true, historySource: project });
       setSelectedNodeId(copiedNodeId);
       toast.success("已复制图片节点");
     },
@@ -2689,9 +2739,12 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
 
   const toggleNodeFavorite = useCallback(
     async (node: ImageCanvasNode) => {
-      await patchImageNode(node.id, { favorite: !node.favorite });
+      await updateActiveProject((project) => ({
+        ...project,
+        nodes: project.nodes.map((item) => (item.id === node.id ? { ...item, favorite: !node.favorite, updatedAt: new Date().toISOString() } : item)),
+      }), { history: true });
     },
-    [patchImageNode],
+    [updateActiveProject],
   );
 
   const toggleCompareNode = useCallback((node: ImageCanvasNode) => {
@@ -2849,7 +2902,7 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
     const nextProject = await persistProject({
       ...project,
       nodes: nextNodes,
-    });
+    }, { history: true, historySource: project });
     const rect = canvasRef.current?.getBoundingClientRect();
     const bounds = getCanvasBounds(nextProject?.nodes || nextNodes);
     if (rect && bounds) {
@@ -2891,11 +2944,24 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
       if (!project) return;
       setSelectedNodeId(null);
       setSelectedGroupIds([]);
+      setSelectionBox(null);
       if (selectedEditNode || selectedPromptNode) {
         clearComposerInputs();
       }
       event.currentTarget.setPointerCapture(event.pointerId);
       markCanvasInteracting();
+      if (event.shiftKey) {
+        const start = getCanvasPoint(event.clientX, event.clientY);
+        dragStateRef.current = {
+          type: "select",
+          startX: start.x,
+          startY: start.y,
+          currentX: start.x,
+          currentY: start.y,
+        };
+        setSelectionBox(selectionBoxFromPoints(start.x, start.y, start.x, start.y));
+        return;
+      }
       dragStateRef.current = {
         type: "pan",
         startX: event.clientX,
@@ -2903,14 +2969,16 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
         baseViewport: project.viewport,
       };
     },
-    [clearComposerInputs, markCanvasInteracting, selectedEditNode, selectedPromptNode],
+    [clearComposerInputs, getCanvasPoint, markCanvasInteracting, selectedEditNode, selectedPromptNode],
   );
 
   const handleNodePointerDown = useCallback((event: ReactPointerEvent<HTMLElement>, node: ImageCanvasNode) => {
     event.stopPropagation();
+    const project = activeProjectRef.current;
+    if (!project) return;
     event.currentTarget.setPointerCapture(event.pointerId);
     markCanvasInteracting();
-    const zoom = activeProjectRef.current?.viewport.zoom ?? 1;
+    const zoom = project.viewport.zoom;
     dragStateRef.current = {
       type: "node",
       nodeId: node.id,
@@ -2919,6 +2987,7 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
       baseX: node.x,
       baseY: node.y,
       zoom,
+      baseProject: cloneCanvasProject(project),
     };
     setSelectedNodeId(node.id);
     setSelectedGroupIds([]);
@@ -2945,6 +3014,13 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
         }
         return;
       }
+      if (dragState.type === "select") {
+        const current = getCanvasPoint(event.clientX, event.clientY);
+        dragState.currentX = current.x;
+        dragState.currentY = current.y;
+        setSelectionBox(selectionBoxFromPoints(dragState.startX, dragState.startY, current.x, current.y));
+        return;
+      }
       const dx = (event.clientX - dragState.startX) / dragState.zoom;
       const dy = (event.clientY - dragState.startY) / dragState.zoom;
       const project = activeProjectRef.current;
@@ -2963,13 +3039,25 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
         ),
       });
     },
-    [markCanvasInteracting, scheduleLocalProject],
+    [getCanvasPoint, markCanvasInteracting, scheduleLocalProject],
   );
 
   const handlePointerUp = useCallback(() => {
-    const hadDragState = Boolean(dragStateRef.current);
+    const dragState = dragStateRef.current;
+    const hadDragState = Boolean(dragState);
     dragStateRef.current = null;
     const project = activeProjectRef.current;
+    if (dragState?.type === "select") {
+      const box = selectionBoxFromPoints(dragState.startX, dragState.startY, dragState.currentX, dragState.currentY);
+      const selectedIds = project ? getNodesInSelection(project.nodes, box).map((node) => node.id) : [];
+      setSelectedGroupIds(selectedIds);
+      setSelectedNodeId(selectedIds.length === 1 ? selectedIds[0] : null);
+      setSelectionBox(null);
+      if (selectedIds.length > 1) {
+        toast.success(`已框选 ${selectedIds.length} 个节点`);
+      }
+      return;
+    }
     if (hadDragState && project) {
       if (localProjectFrameRef.current !== null) {
         window.cancelAnimationFrame(localProjectFrameRef.current);
@@ -2977,7 +3065,7 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
         pendingLocalProjectRef.current = null;
       }
       markCanvasInteracting(90);
-      void persistProject(project);
+      void persistProject(project, dragState?.type === "node" ? { history: true, historySource: dragState.baseProject } : {});
     }
   }, [markCanvasInteracting, persistProject]);
 
@@ -2996,10 +3084,26 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
       const target = event.target as HTMLElement | null;
       const isTyping = Boolean(target?.closest("input, textarea, [contenteditable='true']"));
       if (isTyping) return;
+      const isModifier = event.ctrlKey || event.metaKey;
+      if (isModifier && event.key.toLowerCase() === "z") {
+        event.preventDefault();
+        if (event.shiftKey) {
+          void redoCanvasChange();
+        } else {
+          void undoCanvasChange();
+        }
+        return;
+      }
+      if (isModifier && event.key.toLowerCase() === "y") {
+        event.preventDefault();
+        void redoCanvasChange();
+        return;
+      }
       if (event.key === "Escape" && (selectedGroupIds.length > 0 || selectedNode)) {
         event.preventDefault();
         setSelectedGroupIds([]);
         setSelectedNodeId(null);
+        setSelectionBox(null);
         setDeleteGroupDialogOpen(false);
         return;
       }
@@ -3021,7 +3125,7 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [deleteNodeGroup, deleteSelectedNode, selectedGroupIds, selectedNode]);
+  }, [deleteNodeGroup, deleteSelectedNode, redoCanvasChange, selectedGroupIds, selectedNode, undoCanvasChange]);
 
   if (isLoading) {
     return (
@@ -3427,6 +3531,12 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
               <PanelRight className="size-4" />
               <span className="hidden md:inline">节点</span>
             </Button>
+            <Button variant="outline" className="h-9 rounded-full border-stone-200 bg-white/95 px-3 backdrop-blur" onClick={() => void undoCanvasChange()} disabled={!canUndo} title="撤销">
+              <Undo2 className="size-4" />
+            </Button>
+            <Button variant="outline" className="h-9 rounded-full border-stone-200 bg-white/95 px-3 backdrop-blur" onClick={() => void redoCanvasChange()} disabled={!canRedo} title="重做">
+              <Redo2 className="size-4" />
+            </Button>
             <Button variant="outline" className="h-9 rounded-full border-stone-200 bg-white/95 px-3 backdrop-blur" onClick={() => void tidyCanvasLayout()} disabled={activeProject.nodes.length === 0}>
               <Workflow className="size-4" />
               <span className="hidden lg:inline">整理</span>
@@ -3516,8 +3626,26 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
             style={{ left: centerX, top: bottomY }}
           >
             <span>已选中 {selectedGroupIds.length} 个相关节点</span>
-            <span className="hidden text-rose-300 sm:inline">·</span>
-            <span className="hidden sm:inline">Delete 删除，Esc 取消</span>
+            <Button
+              type="button"
+              variant="ghost"
+              className="h-6 rounded-full px-2 text-xs text-stone-600 hover:bg-stone-100"
+              onClick={() => void alignSelectedNodes("x")}
+              disabled={selectedGroupIds.length < 2}
+              title="垂直居中对齐"
+            >
+              <AlignVerticalJustifyCenter className="size-3.5" />
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              className="h-6 rounded-full px-2 text-xs text-stone-600 hover:bg-stone-100"
+              onClick={() => void alignSelectedNodes("y")}
+              disabled={selectedGroupIds.length < 2}
+              title="水平居中对齐"
+            >
+              <AlignHorizontalJustifyCenter className="size-3.5" />
+            </Button>
             <Button
               type="button"
               variant="ghost"
@@ -3670,6 +3798,18 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
                 );
               })}
             </svg>
+
+            {selectionBox ? (
+              <div
+                className="pointer-events-none absolute z-20 rounded-lg border border-blue-500 bg-blue-500/10 ring-1 ring-white/70"
+                style={{
+                  left: selectionBox.x,
+                  top: selectionBox.y,
+                  width: selectionBox.width,
+                  height: selectionBox.height,
+                }}
+              />
+            ) : null}
 
             {visibleNodes.map((node) => {
               const imageSrc = node.type === "image" ? getImageNodeSrc(node) : "";
@@ -3889,7 +4029,7 @@ function CanvasPageContent({ isAdmin, ownerKey }: { isAdmin: boolean; ownerKey: 
             value={activeProject.title}
             onChange={(event) => {
               const title = event.target.value;
-              void updateActiveProject((project) => ({ ...project, title }));
+              void updateActiveProject((project) => ({ ...project, title }), { history: true });
             }}
             className="h-10 rounded-xl border-stone-200 bg-white text-sm font-semibold"
           />

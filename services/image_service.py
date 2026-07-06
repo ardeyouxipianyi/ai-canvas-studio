@@ -14,6 +14,7 @@ from PIL import Image, ImageOps
 
 from services.config import config
 from services.config import DATA_DIR
+from services.image_canvas_service import image_canvas_service
 from services.image_tags_service import load_tags, remove_tags
 
 THUMBNAIL_SIZE = (320, 320)
@@ -266,6 +267,7 @@ def delete_images(
     root = config.images_dir.resolve()
     targets = [str(item["path"]) for item in _image_items(start_date, end_date, identity)] if all_matching else (paths or [])
     removed = 0
+    removed_paths: list[str] = []
     for item in targets:
         if not _can_access_image(item, identity):
             continue
@@ -281,9 +283,11 @@ def delete_images(
                     thumbnail.unlink()
             remove_tags(item)
             removed += 1
+            removed_paths.append(_safe_relative_path(item))
     _cleanup_empty_dirs(root)
     _cleanup_empty_dirs(config.image_thumbnails_dir)
-    return {"removed": removed}
+    canvas_refs_updated = image_canvas_service.mark_images_deleted(identity or {}, removed_paths)
+    return {"removed": removed, "canvas_refs_updated": canvas_refs_updated}
 
 
 def download_images_zip(paths: list[str], identity: dict[str, object] | None = None) -> io.BytesIO:

@@ -136,10 +136,10 @@ export function ImageManagerContent() {
     if (!deleteTarget) return;
     setIsDeleting(true);
     try {
-      await deleteManagedImages({ paths: [deleteTarget.rel] });
+      const result = await deleteManagedImages({ paths: [deleteTarget.rel] });
       setItems((prev) => prev.filter((item) => item.rel !== deleteTarget.rel));
       setSelectedPaths((prev) => prev.filter((p) => p !== imageKey(deleteTarget)));
-      toast.success("图片已删除");
+      toast.success(result.canvas_refs_updated ? `图片已删除，已标记 ${result.canvas_refs_updated} 个画布节点` : "图片已删除");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "删除失败");
     } finally {
@@ -230,7 +230,7 @@ export function ImageManagerContent() {
     setIsDeleting(true);
     try {
       const data = await deleteManagedImages(deleteMode === "filtered" ? { start_date: startDate, end_date: endDate, all_matching: true } : { paths: selectedPaths });
-      toast.success(`已删除 ${data.removed} 张图片`);
+      toast.success(data.canvas_refs_updated ? `已删除 ${data.removed} 张图片，已标记 ${data.canvas_refs_updated} 个画布节点` : `已删除 ${data.removed} 张图片`);
       setDeleteMode(null);
       setSelectedPaths([]);
       await loadImages();

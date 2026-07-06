@@ -576,7 +576,7 @@ export async function fetchManagedImages(filters: { start_date?: string; end_dat
 }
 
 export async function deleteManagedImages(body: { paths?: string[]; start_date?: string; end_date?: string; all_matching?: boolean }) {
-  return httpRequest<{ removed: number }>("/api/images/delete", { method: "POST", body });
+  return httpRequest<{ removed: number; canvas_refs_updated?: number }>("/api/images/delete", { method: "POST", body });
 }
 
 export async function downloadImages(paths: string[]) {

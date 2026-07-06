@@ -1,11 +1,12 @@
 {
   "name": "ai-canvas-studio-web",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "node dev-unified.mjs",
     "dev:next": "next dev --webpack -H 0.0.0.0",
+    "typecheck": "tsc --noEmit",
     "build": "next build",
     "start": "next start"
   },

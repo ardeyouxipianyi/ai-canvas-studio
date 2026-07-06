@@ -34,8 +34,19 @@ def _owner_id(identity: dict[str, object]) -> str:
     return _clean(identity.get("id")) or "anonymous"
 
 
+def _is_admin(identity: dict[str, object]) -> bool:
+    return _clean(identity.get("role")).lower() == "admin"
+
+
 def _new_id() -> str:
     return uuid.uuid4().hex
+
+
+def _image_rel_from_url(url: object) -> str:
+    value = _clean(url)
+    if "/images/" not in value:
+        return ""
+    return value.split("/images/", 1)[1].split("?", 1)[0].split("#", 1)[0].lstrip("/")
 
 
 def _normalize_node(raw: object) -> dict[str, object] | None:
@@ -175,6 +186,40 @@ class ImageCanvasService:
             self._projects.pop(key, None)
             self._save_locked()
             return True
+
+    def mark_images_deleted(self, identity: dict[str, object], image_paths: list[str]) -> int:
+        deleted = {path.strip().replace("\\", "/").lstrip("/") for path in image_paths if path.strip()}
+        if not deleted:
+            return 0
+        owner = _owner_id(identity)
+        is_admin = _is_admin(identity)
+        updated_nodes = 0
+        now = _now_iso()
+        with self._lock:
+            for project in self._projects.values():
+                if not is_admin and project.get("owner_id") != owner:
+                    continue
+                changed = False
+                next_nodes: list[dict[str, object]] = []
+                for raw_node in project.get("nodes", []):
+                    node = dict(raw_node) if isinstance(raw_node, dict) else raw_node
+                    if isinstance(node, dict) and node.get("type") == "image" and _image_rel_from_url(node.get("url")) in deleted:
+                        node.pop("url", None)
+                        node.pop("b64_json", None)
+                        node["status"] = "error"
+                        node["progress"] = 100
+                        node["progressMessage"] = "图片资产已删除"
+                        node["error"] = "图片资产已删除"
+                        node["updatedAt"] = now
+                        changed = True
+                        updated_nodes += 1
+                    next_nodes.append(node)
+                if changed:
+                    project["nodes"] = next_nodes
+                    project["updatedAt"] = now
+            if updated_nodes:
+                self._save_locked()
+        return updated_nodes
 
 
 image_canvas_service = ImageCanvasService(DATA_DIR / "image_canvas_projects.json")

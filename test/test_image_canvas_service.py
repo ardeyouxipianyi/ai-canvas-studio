@@ -60,6 +60,41 @@ class ImageCanvasServiceTests(unittest.TestCase):
             self.assertEqual(project["nodes"][0]["progress"], 100)
             self.assertEqual(project["nodes"][0]["progressMessage"], "已完成")
 
+    def test_mark_images_deleted_updates_canvas_nodes(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            service = ImageCanvasService(Path(tmp_dir) / "canvas.json")
+            owner = {"id": "user-a", "name": "A", "role": "user"}
+            image_path = "users/user-a/2026/07/07/result.png"
+
+            service.save_project(
+                owner,
+                {
+                    "id": "canvas-1",
+                    "title": "Canvas",
+                    "nodes": [
+                        {
+                            "id": "node-1",
+                            "type": "image",
+                            "title": "Result",
+                            "status": "success",
+                            "url": f"http://local.test/images/{image_path}",
+                        }
+                    ],
+                    "edges": [],
+                },
+            )
+
+            updated = service.mark_images_deleted(owner, [image_path])
+
+            self.assertEqual(updated, 1)
+            [project] = service.list_projects(owner)
+            node = project["nodes"][0]
+            self.assertEqual(node["status"], "error")
+            self.assertEqual(node["progress"], 100)
+            self.assertEqual(node["progressMessage"], "图片资产已删除")
+            self.assertEqual(node["error"], "图片资产已删除")
+            self.assertNotIn("url", node)
+
 
 if __name__ == "__main__":
     unittest.main()

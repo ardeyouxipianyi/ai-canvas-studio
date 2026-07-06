@@ -107,7 +107,7 @@ Write-Host "  PASSED"
 if (-not $SkipTests) {
     Write-Host ""
     Write-Host "[5/9] Running tests..." -ForegroundColor Yellow
-    & uv run python -m unittest discover -s test 2>&1 | Out-Host
+    & uv run python -m unittest discover -s test -t . 2>&1 | Out-Host
     if ($LASTEXITCODE -ne 0) {
         if ($AllowTestFailures) {
             Write-Warning "Test failures detected. Continuing because -AllowTestFailures was set."
